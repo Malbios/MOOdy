@@ -229,5 +229,88 @@
     "object",
     "verb-desc",
     "code"
+  ],
+  "all_contents": [
+    "OBJ object",
+    "full"
+  ],
+  "anons": [
+    "parent"
+  ],
+  "area": [
+    "object"
+  ],
+  "format_time": [
+    "fmt",
+    "time"
+  ],
+  "listget": [
+    "list",
+    "index",
+    "default"
+  ],
+  "listremove_all": [
+    "list",
+    "value",
+    "case-matters"
+  ],
+  "listunique": [
+    "list",
+    "case-matters"
+  ],
+  "mod": [
+    "a",
+    "b"
+  ],
+  "pad": [
+    "str",
+    "width",
+    "char",
+    "side"
+  ],
+  "parse_ordinal": [
+    "str"
+  ],
+  "parse_time": [
+    "str",
+    "fmt",
+    "is_dst"
+  ],
+  "strfindall": [
+    "source",
+    "what",
+    "case-matters",
+    "offset"
+  ],
+  "strlower": [
+    "str"
+  ],
+  "strtrim": [
+    "str",
+    "char"
+  ],
+  "strtriml": [
+    "str",
+    "char"
+  ],
+  "strtrimr": [
+    "str",
+    "char"
+  ],
+  "strupper": [
+    "str"
+  ],
+  "task_valid": [
+    "task-id"
+  ],
+  "toerr": [
+    "value"
+  ],
+  "verb_callable": [
+    "object",
+    "verb-desc"
+  ],
+  "waifs": [
+    "class"
   ]
 }
