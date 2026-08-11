@@ -3679,17 +3679,62 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
     inspectorContentEl.appendChild ownerRow |> ignore
 
-    // Only shown when the object actually has aliases - absent entirely for
-    // one with none (also the case for a tree exported before this field
-    // existed, per FORMAT.md's backwards-compat note on `aliases:`).
+    // Always rendered (unlike the old read-only version, which hid this row
+    // entirely when empty) - otherwise there'd be no way to add the *first*
+    // alias to an object that doesn't have any yet.
     let aliases: string[] = unbox info?aliases
 
-    if aliases.Length > 0 then
-        let aliasesRow = document.createElement ("div")
-        aliasesRow.classList.add "inspector-owner"
-        aliasesRow.appendChild (document.createTextNode "Aliases: ") |> ignore
-        aliasesRow.appendChild (document.createTextNode (String.concat ", " aliases)) |> ignore
-        inspectorContentEl.appendChild aliasesRow |> ignore
+    let aliasesRow = document.createElement ("div")
+    aliasesRow.classList.add "inspector-owner"
+    aliasesRow.appendChild (document.createTextNode "Aliases: ") |> ignore
+
+    let aliasesText = document.createElement ("span")
+    aliasesText.textContent <- (if aliases.Length > 0 then String.concat ", " aliases else "(none)")
+    aliasesRow.appendChild aliasesText |> ignore
+
+    let aliasesEditBtn = document.createElement ("button")
+    aliasesEditBtn.classList.add "inspector-owner-edit-btn"
+    aliasesEditBtn.textContent <- "✎"
+    aliasesEditBtn.title <- "Change aliases"
+
+    let aliasesEditGroup, aliasesInput =
+        mkQuickFillInput "alias1, alias2, ..." (String.concat ", " aliases) [] true
+
+    aliasesEditGroup.setAttribute ("style", "display:none")
+
+    let aliasesConfirmBtn = document.createElement ("button")
+    aliasesConfirmBtn.classList.add "inspector-add-property-btn"
+    aliasesConfirmBtn.textContent <- "✓"
+    aliasesConfirmBtn.title <- "Confirm"
+
+    aliasesConfirmBtn.onclick <-
+        fun _ ->
+            let newAliases =
+                aliasesInput.value.Split([| ','; ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
+                |> Array.map (fun a -> a.Trim())
+                |> Array.filter (fun a -> a <> "")
+                |> Array.toList
+
+            if newAliases <> List.ofArray aliases then
+                sendAction [ "action" ==> "set-object-aliases"; "obj" ==> int objRef; "aliases" ==> newAliases ]
+
+            aliasesText.setAttribute ("style", "")
+            aliasesEditBtn.setAttribute ("style", "")
+            aliasesEditGroup.setAttribute ("style", "display:none")
+
+    aliasesInput.onkeydown <- fun ev -> if ev.key = "Enter" then aliasesConfirmBtn.click ()
+    aliasesEditGroup.appendChild aliasesConfirmBtn |> ignore
+
+    aliasesEditBtn.onclick <-
+        fun _ ->
+            aliasesText.setAttribute ("style", "display:none")
+            aliasesEditBtn.setAttribute ("style", "display:none")
+            aliasesEditGroup.setAttribute ("style", "")
+            aliasesInput.focus ()
+
+    aliasesRow.appendChild aliasesEditBtn |> ignore
+    aliasesRow.appendChild aliasesEditGroup |> ignore
+    inspectorContentEl.appendChild aliasesRow |> ignore
 
     let flagsRow = document.createElement ("div")
     flagsRow.classList.add "inspector-flags"
@@ -6954,6 +6999,17 @@ onWsMessage <-
                 // Same shape as `moodev-prop-add-result` above - a
                 // successful add needs a full inspector refresh (the new
                 // verb row now exists).
+                match headerField "object: #" header with
+                | Some objNum ->
+                    match System.Int64.TryParse objNum with
+                    | true, objRef when activeTab = InspectorTab objRef ->
+                        if headerField "ok: " header = Some "1" then
+                            loadInspector objRef None
+                        else
+                            inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+                    | _ -> ()
+                | None -> ()
+            elif header.StartsWith("moodev-aliases-set-result") then
                 match headerField "object: #" header with
                 | Some objNum ->
                     match System.Int64.TryParse objNum with

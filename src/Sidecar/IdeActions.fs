@@ -1294,6 +1294,66 @@ let setName
                 ct
     }
 
+/// Sets an object's `.aliases` (a plain MOO property, not a core engine
+/// attribute - confirmed against `ToastStunt/src/include/db.h`'s
+/// `BUILTIN_PROPERTIES` macro, which does not list it - so it can be
+/// missing entirely on an object that never had it added, same as any
+/// other user property). The plain assignment covers the common case;
+/// `E_PROPNF` falls back to `add_property` (same builtin `addProperty`
+/// above uses) so a first-time alias can still be set on an object with
+/// no `.aliases` property at all yet.
+let setAliases
+    (config: Config)
+    (session: Session)
+    (webSocket: WebSocket)
+    (objRef: int64)
+    (aliases: string list)
+    (ct: CancellationToken)
+    : Task<unit> =
+    task {
+        let o = sprintf "#%d" objRef
+        let quote (s: string) = "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+        let aliasesLit = "{" + (aliases |> List.map quote |> String.concat ", ") + "}"
+
+        let statements =
+            $"""
+ok = 0; errtext = "";
+try
+  {o}.aliases = {aliasesLit};
+  ok = 1;
+except err (E_PROPNF)
+  try
+    add_property({o}, "aliases", {aliasesLit}, {{player, ""}});
+    ok = 1;
+  except err2 (ANY)
+    errtext = tostr(err2[2]);
+  endtry
+except err (ANY)
+  errtext = tostr(err[2]);
+endtry"""
+
+        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+        let root = json.RootElement
+        let ok = root.GetProperty("ok").GetInt32() = 1
+        let errtext = root.GetProperty("errtext").GetString()
+
+        let! diagnostics =
+            task {
+                if not ok then
+                    return [ errtext ]
+                else
+                    let! gitError = exportAndCommitObject config session objRef "aliases" GitStore.Modified false ct
+                    return gitError |> Option.map (fun m -> [ "(changed, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+            }
+
+        do!
+            sendWire
+                webSocket
+                (sprintf "moodev-aliases-set-result object: #%d ok: %d" objRef (if ok then 1 else 0))
+                diagnostics
+                ct
+    }
+
 /// Toggles one of the inspector's flag badges. `flagName` is never
 /// user-typed - it only ever arrives as one of seven fixed button labels
 /// the client itself defines - so splicing it directly into the generated

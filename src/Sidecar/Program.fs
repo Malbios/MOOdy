@@ -505,6 +505,10 @@ let private buildTryDispatch
                     | "rename-object" ->
                         do! IdeActions.setName config session webSocket (getObj ()) (getStr "name") ct
                         return true
+                    | "set-object-aliases" ->
+                        let aliases = root.GetProperty("aliases").EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
+                        do! IdeActions.setAliases config session webSocket (getObj ()) aliases ct
+                        return true
                     | "set-flag" ->
                         do! IdeActions.setFlag config session webSocket (getObj ()) (getStr "flag") (root.GetProperty("value").GetInt32() = 1) ct
                         return true
