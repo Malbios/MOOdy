@@ -2323,21 +2323,35 @@ let checkVerbSyntax
     }
 
 /// `kill-task {task}` - `kill_task(id)`, wizard-eval'd so it always has
-/// permission regardless of the task's own owner.
+/// permission regardless of the task's own owner. `kill_task()` raises
+/// `E_INVARG` only when the id matches no task in any live/idle/active/
+/// external queue (ToastStunt/src/tasks.cc's `bf_kill_task`) - i.e. "already
+/// finished," not a wiring bug - distinguished from any other failure via
+/// `err[1] == E_INVARG` (`err[1]` is documented as "the error value itself"
+/// in moocode-reference.md's Error handling section, the same value the
+/// standard `except e (ANY) ... return e[1]` idiom exposes). Reported back
+/// as a plain int flag, not a MOO BOOL - matching every other `"ok" -> ok`
+/// shaped payload in this file, none of which have ever round-tripped a
+/// BOOL through `generate_json()`.
 let killTask (webSocket: WebSocket) (session: Session) (taskId: int64) (ct: CancellationToken) : Task<unit> =
     task {
         let statements =
-            $"""ok = 0; errtext = ""; try kill_task({taskId}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
+            $"""ok = 0; errtext = ""; notFound = 0; try kill_task({taskId}); ok = 1; except err (ANY) errtext = tostr(err[2]); if (err[1] == E_INVARG) notFound = 1; endif endtry"""
 
-        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext, "notFound" -> notFound]""" ct
         let root = json.RootElement
         let ok = root.GetProperty("ok").GetInt32() = 1
         let errtext = root.GetProperty("errtext").GetString()
+        let notFound = root.GetProperty("notFound").GetInt32() = 1
 
         do!
             sendWire
                 webSocket
-                (sprintf "moodev-kill-task-result task: %d ok: %d" taskId (if ok then 1 else 0))
+                (sprintf
+                    "moodev-kill-task-result task: %d ok: %d not-found: %d"
+                    taskId
+                    (if ok then 1 else 0)
+                    (if notFound then 1 else 0))
                 (if ok then [] else [ errtext ])
                 ct
     }

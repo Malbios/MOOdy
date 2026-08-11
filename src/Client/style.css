@@ -178,6 +178,41 @@ html, body {
   overflow: hidden;
 }
 
+/* --- "Reconnect exhausted" modal - same backdrop-modal idiom as Settings/
+   Command palette above, but deliberately NOT dismissible (no backdrop
+   click, no ×): this represents a genuinely blocking state, the app isn't
+   usable while disconnected, so the only way out is the Retry button. A
+   higher z-index than the other two overlays so it always wins if either
+   happened to be open when the connection dropped. -------------------- */
+
+#reconnect-exhausted-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.7);
+  align-items: center;
+  justify-content: center;
+}
+
+#reconnect-exhausted-overlay.visible {
+  display: flex;
+}
+
+#reconnect-exhausted-panel {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  width: 22em;
+  padding: 1em;
+  text-align: center;
+}
+
+#reconnect-exhausted-panel p {
+  margin: 0.8em 0 1em;
+  color: #ccc;
+}
+
 #command-palette-input {
   box-sizing: border-box;
   width: 100%;

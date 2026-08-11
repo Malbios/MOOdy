@@ -51,6 +51,8 @@ let private commandPaletteInputEl = document.getElementById ("command-palette-in
 let private commandPaletteListEl = document.getElementById ("command-palette-list")
 
 let private connectionStatusEl = document.getElementById ("connection-status")
+let private reconnectExhaustedOverlayEl = document.getElementById ("reconnect-exhausted-overlay")
+let private reconnectRetryBtn = document.getElementById ("reconnect-retry-btn")
 let private settingsBtn = document.getElementById ("settings-btn")
 let private settingsOverlayEl = document.getElementById ("settings-overlay")
 let private settingsPanelEl = document.getElementById ("settings-panel")
@@ -398,11 +400,15 @@ let mutable private ws: WebSocket = Unchecked.defaultof<WebSocket>
 /// One of `Connected` / `Disconnected` (a deliberate teardown - the
 /// "switch MOO target" reload flow, which is about to blow away this whole
 /// page anyway) / `Reconnecting` (an unexpected drop, backing off before
-/// the next `connectWebSocket` retry).
+/// the next `connectWebSocket` retry) / `RetriesExhausted` (five
+/// `Reconnecting` attempts in a row all failed - stop retrying on its own
+/// and wait for the user to click "Retry" in the modal `renderConnectionStatus`
+/// shows for this state).
 type private ConnState =
     | Connected
     | Disconnected
     | Reconnecting of attempt: int
+    | RetriesExhausted
 
 let mutable private connState: ConnState = Disconnected
 
@@ -414,17 +420,33 @@ let mutable private connState: ConnState = Disconnected
 /// should ever schedule a reconnect.
 let mutable private expectingTeardown = false
 
+/// Applies to both an unexpected drop mid-session and the very first
+/// `connectWebSocket()` call at module init (before any login) - if the
+/// Sidecar simply isn't up yet, that first connection can exhaust its own 5
+/// attempts too. Deliberate: giving up and offering a manual retry is the
+/// right behavior either way, so `reconnect-exhausted-panel`'s copy is
+/// worded to make sense for both cases rather than assuming a prior
+/// connection.
+let private maxReconnectAttempts = 5
+
 let private renderConnectionStatus () : unit =
     match connState with
     | Connected ->
         connectionStatusEl.textContent <- "connected"
         connectionStatusEl.className <- "connection-status status-connected"
+        reconnectExhaustedOverlayEl.classList.remove "visible"
     | Reconnecting attempt ->
         connectionStatusEl.textContent <- sprintf "reconnecting (attempt %d)..." attempt
         connectionStatusEl.className <- "connection-status status-reconnecting"
+        reconnectExhaustedOverlayEl.classList.remove "visible"
     | Disconnected ->
         connectionStatusEl.textContent <- "disconnected"
         connectionStatusEl.className <- "connection-status status-disconnected"
+        reconnectExhaustedOverlayEl.classList.remove "visible"
+    | RetriesExhausted ->
+        connectionStatusEl.textContent <- "disconnected (retries exhausted)"
+        connectionStatusEl.className <- "connection-status status-disconnected"
+        reconnectExhaustedOverlayEl.classList.add "visible"
 
 let mutable private onWsOpen: Event -> unit = fun _ -> ()
 let mutable private onWsClose: Event -> unit = fun _ -> ()
@@ -2716,11 +2738,23 @@ and private openOrSwitchToInspector (objRef: int64) : unit = openOrSwitchToInspe
 /// both, fresh. `highlightProp`, when `Some`, is forwarded to
 /// `renderInspectorStructure` to scroll to and flash that property's row.
 and private loadInspector (objRef: int64) (highlightProp: string option) : unit =
-    inspectorDiagnosticsEl.textContent <- ""
-    inspectorContentEl.textContent <- "Loading..."
+    // Guarded rather than unconditional - a caller can now invoke this for an
+    // object whose own inspector tab isn't the active one (e.g. a tree
+    // drag&drop reparent, see the `moodev-parent-add-result` handler above),
+    // and clearing/overwriting the *currently visible* pane's content with
+    // "Loading..." in that case would stomp on whatever the user is actually
+    // looking at. Every pre-existing caller already only invoked this when
+    // `activeTab = InspectorTab objRef` held, so this guard is a no-op for
+    // all of them.
+    if activeTab = InspectorTab objRef then
+        inspectorDiagnosticsEl.textContent <- ""
+        inspectorContentEl.textContent <- "Loading..."
 
     // Always live - matches the "live governs, no export needed" rule
-    // already applied to hover/go-to-definition/builtins.
+    // already applied to hover/go-to-definition/builtins. Sent regardless of
+    // whether the tab is active - the `moodev-live-info` response's own
+    // handler does an unconditional tree-sync independent of the inspector
+    // pane render, so the tree stays correct even with no tab open.
     sendAction [ "action" ==> "get-live-info"; "obj" ==> int objRef ]
 
     sendAction [ "action" ==> "get-properties"; "obj" ==> int objRef ]
@@ -3057,6 +3091,8 @@ and private renderObjRefList
             fun _ ->
                 let expr = addInput.value.Trim()
                 if expr <> "" then addFn expr
+
+        addInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
 
         addItem.appendChild addInput |> ignore
         addItem.appendChild addBtn |> ignore
@@ -6361,10 +6397,12 @@ onWsOpen <-
         // once it succeeds.
         sendAction [ "action" ==> "get-moo-target" ]
 
-// Reconnect backoff: 1s, 2s, 4s, ... capped at 30s. Skipped entirely when
-// `expectingTeardown` is set - the one deliberate `window.location.reload()`
-// this client ever does is about to tear down this whole page anyway, so
-// there's nothing useful for a reconnect attempt to do.
+// Reconnect backoff: 1s, 2s, 4s, ... capped at 30s, up to `maxReconnectAttempts`
+// tries before giving up and showing the "retries exhausted" modal instead of
+// retrying forever. Skipped entirely when `expectingTeardown` is set - the
+// one deliberate `window.location.reload()` this client ever does is about
+// to tear down this whole page anyway, so there's nothing useful for a
+// reconnect attempt to do.
 onWsClose <-
     fun _ ->
         appendOutput "\n[disconnected]\n"
@@ -6376,12 +6414,29 @@ onWsClose <-
             renderConnectionStatus ()
         else
             let attempt = match connState with | Reconnecting n -> n + 1 | _ -> 1
-            connState <- Reconnecting attempt
-            renderConnectionStatus ()
-            let delayMs = min 30000 (1000 * pown 2 (attempt - 1))
-            JS.setTimeout (fun () -> connectWebSocket ()) delayMs |> ignore
+
+            if attempt > maxReconnectAttempts then
+                connState <- RetriesExhausted
+                renderConnectionStatus ()
+            else
+                connState <- Reconnecting attempt
+                renderConnectionStatus ()
+                let delayMs = min 30000 (1000 * pown 2 (attempt - 1))
+                JS.setTimeout (fun () -> connectWebSocket ()) delayMs |> ignore
 
 onWsError <- fun _ -> appendOutput "\n[connection error]\n"
+
+// Setting `Disconnected` (not a fresh `Reconnecting 0`) is deliberate -
+// `onWsClose`'s own attempt-counting (`match connState with | Reconnecting n
+// -> n + 1 | _ -> 1`) already falls through to `1` for any non-`Reconnecting`
+// state, so this naturally restarts a full `maxReconnectAttempts`-attempt
+// backoff cycle from scratch if the immediate retry below also fails, with
+// no separate reset path needed.
+reconnectRetryBtn.onclick <-
+    fun _ ->
+        connState <- Disconnected
+        renderConnectionStatus ()
+        connectWebSocket ()
 
 // "Configurable MOO server target" feature's switch sequence: validate +
 // swap the sidecar's own live connection/tree ("reconfigure-target"), then
@@ -6895,19 +6950,52 @@ onWsMessage <-
                     | _ -> ()
                 | None -> ()
             elif
-                header.StartsWith("moodev-owner-set-result")
-                || header.StartsWith("moodev-flag-set-result")
-                || header.StartsWith("moodev-parent-add-result")
+                header.StartsWith("moodev-parent-add-result")
                 || header.StartsWith("moodev-parent-remove-result")
                 || header.StartsWith("moodev-name-set-result")
+            then
+                // Split out from the shared "inspector mutation" branch below -
+                // unlike those, these three change data the TREE renders
+                // (Parents/Children/Name), and re-parenting is just as often
+                // triggered by dragging a node in the tree itself (no
+                // inspector tab open at all) as from the inspector's own
+                // Parents section. So `loadInspector` (whose own
+                // `moodev-live-info` response handler does the tree-sync
+                // unconditionally, further below) must fire regardless of
+                // which tab is active - not gated like the other, tree-blind
+                // mutations are. On failure, only fall back to a `window.alert`
+                // when this object's own tab isn't open to show diagnostics in
+                // - today a drag&drop failure with no tab open is silent.
+                match headerField "object: #" header with
+                | Some objNum ->
+                    match System.Int64.TryParse objNum with
+                    | true, objRef ->
+                        if headerField "ok: " header = Some "1" then
+                            loadInspector objRef None
+                        elif activeTab = InspectorTab objRef then
+                            inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+                        elif not (Array.isEmpty lines) then
+                            window.alert (String.concat "\n" lines)
+                    | _ -> ()
+                | None -> ()
+            elif
+                header.StartsWith("moodev-owner-set-result")
+                || header.StartsWith("moodev-flag-set-result")
                 || header.StartsWith("moodev-child-add-result")
                 || header.StartsWith("moodev-prop-info-set-result")
                 || header.StartsWith("moodev-verb-info-set-result")
                 || header.StartsWith("moodev-verb-args-set-result")
             then
-                // All nine share the exact same "full inspector refresh on
-                // success, diagnostics on failure" shape as every other
-                // mutating inspector action.
+                // owner/flag/prop-info/verb-info/verb-args changes touch
+                // data the tree never renders, so nothing to keep in sync
+                // outside the inspector pane - still fine to only refresh
+                // when that tab is active. `child-add` is here too, but for
+                // a different reason: its own `object: #<objRef>` reports
+                // the *parent*, not the child that actually changed, so
+                // `loadInspector objRef None` can't sync the tree correctly
+                // here even in principle - fixing that needs a Sidecar
+                // wire-protocol change (emit the child's own ref), tracked
+                // separately, not attempted in this pass.
                 match headerField "object: #" header with
                 | Some objNum ->
                     match System.Int64.TryParse objNum with
@@ -7084,44 +7172,77 @@ onWsMessage <-
                 // heard of (see `loadInspector`'s `None` arm) - same
                 // `renderInspectorStructure` the LSP-sourced path uses,
                 // unchanged, since this payload is shaped identically.
+                //
+                // Unlike the inspector-pane rendering below (still gated on
+                // `activeTab`, since there's no point rendering a pane no
+                // one's looking at), the tree-sync runs unconditionally -
+                // `loadInspector` can now be called for an object whose own
+                // tab isn't active (a tree drag&drop reparent, a rename, ...),
+                // and the tree itself is always visible regardless of which
+                // inspector tab (if any) is open.
                 match headerField "object: #" header with
                 | Some objNum ->
                     match System.Int64.TryParse objNum with
-                    | true, objRef when activeTab = InspectorTab objRef ->
+                    | true, objRef ->
                         match Array.tryHead lines with
                         | Some line ->
                             let info: obj = JS.JSON.parse line
 
                             if isNullOrUndefined info then
-                                inspectorContentEl.textContent <- sprintf "#%d - not found." objRef
+                                if activeTab = InspectorTab objRef then
+                                    inspectorContentEl.textContent <- sprintf "#%d - not found." objRef
                             else
-                                let highlightProp =
-                                    activeInspectorProp |> Option.bind (fun (r, p) -> if r = objRef then Some p else None)
-
-                                renderInspectorStructure objRef info highlightProp
-
-                                // `getLiveInfo`'s own verb/property scan
-                                // self-limits via `ticks_left()` on a real,
-                                // richly-inherited object rather than
-                                // dying - see its own comment. Surfaced here
-                                // rather than silently showing an incomplete
-                                // verb/property list as if it were complete.
-                                let truncated: obj = info?truncated
-
-                                if not (isNullOrUndefined truncated) && unbox<bool> truncated then
-                                    inspectorDiagnosticsEl.textContent <-
-                                        "Showing partial results - this object has too many verbs/properties across its ancestor chain to load in one pass."
-
                                 // Keeps the tree row (name/nesting) in sync
                                 // with whatever mutation just triggered this
                                 // refresh - see `syncTreeNodeFromLiveInfo`'s
-                                // own comment.
+                                // own comment. Always runs, tab or no tab.
+                                //
+                                // `r?objRef` (camelCase), not `r?objref` - a
+                                // real, pre-existing bug found live while
+                                // testing this very fix: `IdeActions.getLiveInfo`
+                                // (Sidecar side) re-serializes each parent via
+                                // its own `refOf` helper into `{| objRef = ...;
+                                // name = ... |}`, camelCase, same as
+                                // `renderInspectorStructure`'s own (correct)
+                                // `toRefList` above already reads - it's only
+                                // the raw MOO-side `generate_json()` output
+                                // (a different layer entirely) that uses
+                                // lowercase `"objref"`. Reading the wrong case
+                                // silently threw ("NaN cannot be converted to
+                                // BigInt") inside this handler on any object
+                                // with a real parent, aborting before
+                                // `renderTree()` ever ran - very likely the
+                                // actual root cause (or a compounding one)
+                                // behind the reported "tree doesn't refresh
+                                // after reparenting" bug, not just the
+                                // `activeTab` gating this change also fixes.
                                 let liveParents =
-                                    (unbox info?parents: obj[]) |> Array.map (fun r -> int64 (r?objref: float))
+                                    (unbox info?parents: obj[]) |> Array.map (fun r -> int64 (r?objRef: float))
 
                                 syncTreeNodeFromLiveInfo objRef (info?name: string) liveParents
                                 renderTree ()
-                        | None -> inspectorContentEl.textContent <- sprintf "#%d - not found." objRef
+
+                                if activeTab = InspectorTab objRef then
+                                    let highlightProp =
+                                        activeInspectorProp |> Option.bind (fun (r, p) -> if r = objRef then Some p else None)
+
+                                    renderInspectorStructure objRef info highlightProp
+
+                                    // `getLiveInfo`'s own verb/property scan
+                                    // self-limits via `ticks_left()` on a
+                                    // real, richly-inherited object rather
+                                    // than dying - see its own comment.
+                                    // Surfaced here rather than silently
+                                    // showing an incomplete verb/property
+                                    // list as if it were complete.
+                                    let truncated: obj = info?truncated
+
+                                    if not (isNullOrUndefined truncated) && unbox<bool> truncated then
+                                        inspectorDiagnosticsEl.textContent <-
+                                            "Showing partial results - this object has too many verbs/properties across its ancestor chain to load in one pass."
+                        | None ->
+                            if activeTab = InspectorTab objRef then
+                                inspectorContentEl.textContent <- sprintf "#%d - not found." objRef
                     | _ -> ()
                 | None -> ()
             // "-result" (the ok:0 / error variants) checked before their
@@ -7321,9 +7442,19 @@ onWsMessage <-
                     renderEnvDoctorResults results
             elif header.StartsWith("moodev-kill-task-result") then
                 let ok = headerField "ok: " header = Some "1"
+                let notFound = headerField "not-found: " header = Some "1"
 
                 if ok then
                     if activeSidebarView = TasksView then loadTasks ()
+                elif notFound then
+                    // The task had already finished by the time this kill
+                    // request reached the MOO (the Tasks panel is a one-shot
+                    // snapshot, so this is common, not exceptional) - refresh
+                    // the list so the now-stale row doesn't linger to be
+                    // clicked again, and say so plainly instead of surfacing
+                    // MOO's raw "Invalid argument" as if something broke.
+                    if activeSidebarView = TasksView then loadTasks ()
+                    window.alert "That task no longer exists - it likely already finished."
                 elif not (Array.isEmpty lines) then
                     window.alert (String.concat "\n" lines)
             elif header.StartsWith("moodev-test-run-result") then
