@@ -4265,6 +4265,21 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                         openOrSwitchToInspector vDefinerRef
 
                 td.appendChild definerLink |> ignore
+
+                let overrideBtn = document.createElement ("button") :?> HTMLButtonElement
+                overrideBtn.classList.add "inspector-link"
+                overrideBtn.classList.add "inspector-override-btn"
+                overrideBtn.textContent <- "Override"
+
+                overrideBtn.title <-
+                    "Create an independent local copy of this verb on this object, so editing it here won't change the ancestor that currently defines it."
+
+                overrideBtn.onclick <-
+                    fun ev ->
+                        ev.stopPropagation () |> ignore
+                        sendAction [ "action" ==> "override-verb"; "obj" ==> int objRef; "definer" ==> int vDefinerRef; "verb" ==> verbName ]
+
+                td.appendChild overrideBtn |> ignore
                 td
 
         tr.appendChild nameTd |> ignore
@@ -6949,6 +6964,26 @@ onWsMessage <-
                             inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
                     | _ -> ()
                 | None -> ()
+            elif header.StartsWith("moodev-verb-override-result") then
+                // Unconditional (not gated on activeTab): a successful
+                // override should both refresh the child's inspector (the
+                // row now shows as its own, editable copy) and switch the
+                // user onto the new tab, regardless of what's currently
+                // open.
+                match headerField "object: #" header, headerField "verb: " header with
+                | Some objNum, Some verbName ->
+                    match System.Int64.TryParse objNum with
+                    | true, objRef ->
+                        if headerField "ok: " header = Some "1" then
+                            loadInspector objRef None
+                            openOrSwitchToVerb objRef verbName
+
+                            if not (Array.isEmpty lines) then
+                                window.alert (String.concat "\n" lines)
+                        else
+                            window.alert (String.concat "\n" lines)
+                    | _ -> ()
+                | _ -> ()
             elif
                 header.StartsWith("moodev-parent-add-result")
                 || header.StartsWith("moodev-parent-remove-result")

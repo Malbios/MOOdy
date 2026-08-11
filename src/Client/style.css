@@ -1197,6 +1197,15 @@ html, body {
   font-style: normal;
 }
 
+.inspector-override-btn {
+  background: none;
+  border: none;
+  font: inherit;
+  padding: 0;
+  margin-left: 0.6em;
+  font-style: normal;
+}
+
 .inspector-shadowed-suffix {
   color: #c85;
   font-style: italic;

@@ -413,6 +413,76 @@ let addVerb
                 ct
     }
 
+/// Materializes a local, independent copy of an *inherited* verb onto
+/// `childRef` - copies `definerRef`'s current `verb_info`/`verb_args`/
+/// `verb_code` onto a brand-new verb on the child, owned by `player`
+/// (this project has no real accounting - see CLAUDE.md "There is no real
+/// login/accounting yet" - so `player` is always the connecting wizard).
+/// The definer's own verb is never touched. This is the fix for "editing
+/// an inherited verb through a child mutates the parent": before this
+/// existed, the only way to edit an inherited verb was to open it at its
+/// true definer (see the verb-row rendering in the client, which is
+/// itself correct, honest behavior, not the bug) - there was no way to
+/// split a child's behavior off from its ancestor's shared definition.
+let overrideVerb
+    (config: Config)
+    (session: Session)
+    (webSocket: WebSocket)
+    (childRef: int64)
+    (definerRef: int64)
+    (verbName: string)
+    (ct: CancellationToken)
+    : Task<unit> =
+    task {
+        let c = sprintf "#%d" childRef
+        let d = sprintf "#%d" definerRef
+        let verbLit = "\"" + verbName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+
+        let statements =
+            resolveVerbIndexStatements d verbLit
+            + $"""
+ok = 0; errtext = "";
+if (idx == 0)
+  errtext = "verb not found on definer";
+else
+  vinfo = verb_info({d}, idx);
+  vargs = verb_args({d}, idx);
+  vcode = verb_code({d}, idx, 0, 1);
+  try
+    add_verb({c}, {{player, vinfo[2], vinfo[3]}}, vargs);
+  except err (ANY)
+    errtext = tostr(err[2]);
+  endtry
+  if (errtext == "")
+    newvlist = verbs({c}); newidx = 0;
+    for i in [1..length(newvlist)] if ({verbLit} in explode(newvlist[i], " ")) newidx = i; endif endfor
+    errs = (newidx == 0) ? {{"override verb not found after add"}} | set_verb_code({c}, newidx, vcode);
+    if (length(errs) > 0) errtext = errs[1]; else ok = 1; endif
+  endif
+endif"""
+
+        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+        let root = json.RootElement
+        let ok = root.GetProperty("ok").GetInt32() = 1
+        let errtext = root.GetProperty("errtext").GetString()
+
+        let! diagnostics =
+            task {
+                if not ok then
+                    return [ errtext ]
+                else
+                    let! gitError = exportAndCommitObject config session childRef verbName GitStore.Added true ct
+                    return gitError |> Option.map (fun m -> [ "(overridden, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+            }
+
+        do!
+            sendWire
+                webSocket
+                (sprintf "moodev-verb-override-result object: #%d verb: %s ok: %d" childRef verbName (if ok then 1 else 0))
+                diagnostics
+                ct
+    }
+
 /// Changes any/all of an *existing* verb's names, owner, and perms in one
 /// call - `set_verb_info(obj, verb-desc, {owner, perms, names})` (confirmed
 /// against `ToastStunt/src/verbs.cc`'s `bf_set_verb_info`). `verbName` is

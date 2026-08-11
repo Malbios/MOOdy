@@ -487,6 +487,18 @@ let private buildTryDispatch
                                 ct
 
                         return true
+                    | "override-verb" ->
+                        do!
+                            IdeActions.overrideVerb
+                                config
+                                session
+                                webSocket
+                                (getObj ())
+                                (root.GetProperty("definer").GetInt64())
+                                (getStr "verb")
+                                ct
+
+                        return true
                     | "set-owner" ->
                         do! IdeActions.setOwner config session webSocket (getObj ()) (getStr "ownerExpr") ct
                         return true
