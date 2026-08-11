@@ -1391,21 +1391,27 @@ let addChild
         let root = json.RootElement
         let ok = root.GetProperty("ok").GetInt32() = 1
         let errtext = root.GetProperty("errtext").GetString()
+        let childRef = int64 (root.GetProperty("child").GetString().TrimStart('#'))
 
         let! diagnostics =
             task {
                 if not ok then
                     return [ errtext ]
                 else
-                    let childRef = int64 (root.GetProperty("child").GetString().TrimStart('#'))
                     let! gitError = exportAndCommitObject config session childRef "parents" GitStore.Modified false ct
                     return gitError |> Option.map (fun m -> [ "(changed, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
             }
 
+        // `child: #<childRef>` (only meaningful on success - `child` is
+        // `#-1` if the expression never resolved) lets the client sync the
+        // TREE for the object that actually changed, not just refresh the
+        // parent's own inspector pane - see the client-side handler's own
+        // comment for why `object: #<objRef>` (the parent) alone isn't
+        // enough for that.
         do!
             sendWire
                 webSocket
-                (sprintf "moodev-child-add-result object: #%d ok: %d" objRef (if ok then 1 else 0))
+                (sprintf "moodev-child-add-result object: #%d ok: %d child: #%d" objRef (if ok then 1 else 0) childRef)
                 diagnostics
                 ct
     }

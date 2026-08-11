@@ -6978,10 +6978,40 @@ onWsMessage <-
                             window.alert (String.concat "\n" lines)
                     | _ -> ()
                 | None -> ()
+            elif header.StartsWith("moodev-child-add-result") then
+                // Split out from the shared "inspector mutation" branch below
+                // - unlike those, this needs to keep the TREE in sync too,
+                // and the parent (`object: #<objRef>`) alone isn't enough for
+                // that: the object whose own Parents array actually changed
+                // is the *child*, not the parent, so the tree-sync must come
+                // from the child's own `moodev-live-info` response, driven
+                // by the `child: #<childRef>` field `IdeActions.addChild`
+                // now also sends (see its own comment). The parent's own
+                // inspector pane (its Children list just grew) is still only
+                // refreshed when that tab is the one showing, same as before.
+                match headerField "object: #" header with
+                | Some objNum ->
+                    match System.Int64.TryParse objNum with
+                    | true, objRef ->
+                        if headerField "ok: " header = Some "1" then
+                            if activeTab = InspectorTab objRef then
+                                loadInspector objRef None
+
+                            match headerField "child: #" header with
+                            | Some childNum ->
+                                match System.Int64.TryParse childNum with
+                                | true, childRef -> loadInspector childRef None
+                                | _ -> ()
+                            | None -> ()
+                        elif activeTab = InspectorTab objRef then
+                            inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+                        elif not (Array.isEmpty lines) then
+                            window.alert (String.concat "\n" lines)
+                    | _ -> ()
+                | None -> ()
             elif
                 header.StartsWith("moodev-owner-set-result")
                 || header.StartsWith("moodev-flag-set-result")
-                || header.StartsWith("moodev-child-add-result")
                 || header.StartsWith("moodev-prop-info-set-result")
                 || header.StartsWith("moodev-verb-info-set-result")
                 || header.StartsWith("moodev-verb-args-set-result")
@@ -6989,13 +7019,7 @@ onWsMessage <-
                 // owner/flag/prop-info/verb-info/verb-args changes touch
                 // data the tree never renders, so nothing to keep in sync
                 // outside the inspector pane - still fine to only refresh
-                // when that tab is active. `child-add` is here too, but for
-                // a different reason: its own `object: #<objRef>` reports
-                // the *parent*, not the child that actually changed, so
-                // `loadInspector objRef None` can't sync the tree correctly
-                // here even in principle - fixing that needs a Sidecar
-                // wire-protocol change (emit the child's own ref), tracked
-                // separately, not attempted in this pass.
+                // when that tab is active.
                 match headerField "object: #" header with
                 | Some objNum ->
                     match System.Int64.TryParse objNum with
