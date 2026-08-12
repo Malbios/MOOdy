@@ -2014,6 +2014,21 @@ let private syncTreeNodeFromLiveInfo (objRef: int64) (name: string) (newParents:
                 treeNodes <- Map.add p { pNode with Children = Array.append pNode.Children [| objRef |] } treeNodes
             | _ -> ()
 
+        // `rootRefs` is a separate list, only ever populated at build/merge
+        // time (`buildTree`/`mergeLiveRoots`) - the `treeNodes` updates
+        // above keep parent/child bookkeeping correct but never touched
+        // this, so a formerly-rootless object (added to `rootRefs` when
+        // first created parentless) kept rendering as a stray top-level row
+        // forever after being re-parented. Symmetric: also rejoins
+        // `rootRefs` if every parent was removed, leaving it genuinely
+        // rootless again - matches `mergeLiveRoots`'s own "roots = objects
+        // with zero parents" rule.
+        if Array.isEmpty newParents then
+            if not (Array.contains objRef rootRefs) then
+                rootRefs <- Array.append rootRefs [| objRef |]
+        else
+            rootRefs <- rootRefs |> Array.filter ((<>) objRef)
+
 /// Which object nodes are expanded, by objRef - a `Set`, not per-occurrence:
 /// expanding #7 once should reveal its children under *every* parent it
 /// appears under (the object graph is a DAG - see the project plan's
