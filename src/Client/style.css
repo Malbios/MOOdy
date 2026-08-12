@@ -46,6 +46,7 @@ html, body {
   border: 1px solid #444;
   background: #1a1a1a;
   color: #999;
+  cursor: pointer;
 }
 
 .connection-status:empty {
@@ -120,6 +121,28 @@ html, body {
 }
 
 #settings-panel {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  width: 22em;
+  padding: 1em;
+}
+
+#connection-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  align-items: center;
+  justify-content: center;
+}
+
+#connection-overlay.visible {
+  display: flex;
+}
+
+#connection-panel {
   background: #1a1a1a;
   border: 1px solid #444;
   border-radius: 6px;

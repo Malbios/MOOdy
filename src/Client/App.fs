@@ -57,6 +57,9 @@ let private settingsBtn = document.getElementById ("settings-btn")
 let private settingsOverlayEl = document.getElementById ("settings-overlay")
 let private settingsPanelEl = document.getElementById ("settings-panel")
 let private settingsCloseBtn = document.getElementById ("settings-close")
+let private connectionOverlayEl = document.getElementById ("connection-overlay")
+let private connectionPanelEl = document.getElementById ("connection-panel")
+let private connectionCloseBtn = document.getElementById ("connection-close")
 let private settingWordWrapEl = document.getElementById ("setting-wordwrap") :?> HTMLInputElement
 let private settingFontSizeEl = document.getElementById ("setting-fontsize") :?> HTMLInputElement
 let private settingMinimapEl = document.getElementById ("setting-minimap") :?> HTMLInputElement
@@ -607,6 +610,16 @@ staleTabWarningDismissBtn.onclick <- fun _ -> staleTabWarningEl.classList.add "h
 // button uses against its tab's own switch-click.
 settingsOverlayEl.onclick <- fun _ -> Settings.hide ()
 settingsPanelEl.onclick <- fun ev -> ev.stopPropagation () |> ignore
+
+// Same open/close idiom as the Settings modal just above - the connection
+// details (MOO server target) used to live inside the Settings modal, split
+// out into their own modal triggered by the connection-status badge instead
+// of the gear icon, since it's a different concern (where we're connected
+// to, not how the editor/UI behaves).
+connectionStatusEl.onclick <- fun _ -> connectionOverlayEl.classList.add "visible"
+connectionCloseBtn.onclick <- fun _ -> connectionOverlayEl.classList.remove "visible"
+connectionOverlayEl.onclick <- fun _ -> connectionOverlayEl.classList.remove "visible"
+connectionPanelEl.onclick <- fun ev -> ev.stopPropagation () |> ignore
 
 // Same "inner click stops propagation, outer click closes" idiom as the
 // Settings overlay just above - `document` stands in for a dedicated
