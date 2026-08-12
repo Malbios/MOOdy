@@ -1771,6 +1771,76 @@ let private headerField (marker: string) (header: string) : string option =
         let spaceIdx = rest.IndexOf(' ')
         Some(if spaceIdx < 0 then rest else rest.Substring(0, spaceIdx))
 
+/// Handle of the pending debounced LanguageServer graph reload (`None` when
+/// nothing's scheduled) - mirrors `syntaxCheckTimer` above, just for a
+/// different purpose: coalescing a burst of mutating wire responses (e.g.
+/// several verb saves in a row, or a bulk find-and-replace) into a single
+/// `moodev/reloadGraph` call instead of one per message.
+let mutable private graphReloadTimer: int option = None
+
+/// `-result` headers that never change the object/verb/property graph the
+/// LanguageServer's static analysis snapshot describes - pure reads,
+/// history/search lookups, and task/eval/admin actions. Deliberately an
+/// exclude list rather than an include list of known-mutating actions: this
+/// session hit the same failure shape twice already (the corponym-rename
+/// cascade gap, the `rootRefs` staleness gap) from a *new* mutation path
+/// being added without being wired into a shared refresh mechanism - an
+/// include list repeats that mistake by construction, since a future new
+/// mutating action would silently need its own entry here too.
+/// `moodev-reconfigure-target-result` is excluded because that flow already
+/// calls `reloadGraphAsync` explicitly, immediately followed by a full page
+/// reload - this trigger would otherwise fire redundantly right before that.
+let private nonMutatingResultHeaders =
+    set
+        [ "moodev-verb-syntax-check-result"
+          "moodev-login-result"
+          "moodev-prop-result"
+          "moodev-verb-history-result"
+          "moodev-verb-at-commit-result"
+          "moodev-verb-at-parent-result"
+          "moodev-search-result"
+          "moodev-content-search-result"
+          "moodev-property-search-result"
+          "moodev-env-doctor-result"
+          "moodev-kill-task-result"
+          "moodev-test-run-result"
+          "moodev-scratchpad-result"
+          "moodev-watch-result"
+          "moodev-moo-target-result"
+          "moodev-reconfigure-target-result" ]
+
+let private isGraphMutatingResult (header: string) : bool =
+    header.Contains("-result")
+    && headerField "ok: " header <> Some "0"
+    && not (nonMutatingResultHeaders |> Set.exists header.StartsWith)
+
+/// Debounced (~1.5s idle) auto-reload of the LanguageServer's static graph,
+/// triggered from `onWsMessage` for any message `isGraphMutatingResult`
+/// accepts. Best-effort: this is a background consistency refresh, not a
+/// user-initiated action, so failures just log to the console rather than
+/// surfacing anywhere in the UI - the graph stays stale until the next
+/// successful trigger, exactly as it silently does today without this.
+let private scheduleGraphReload () : unit =
+    graphReloadTimer |> Option.iter JS.clearTimeout
+
+    graphReloadTimer <-
+        Some(
+            JS.setTimeout
+                (fun () ->
+                    graphReloadTimer <- None
+                    let treeDir = settingMooTreeDirEl.value
+
+                    if treeDir <> "" then
+                        async {
+                            try
+                                do! LspClient.reloadGraphAsync treeDir
+                            with ex ->
+                                JS.console.error ("Auto graph reload failed:", ex.Message)
+                        }
+                        |> Async.StartImmediate)
+                1500
+        )
+
 let private isMcpMessage (data: obj) : bool = emitJsExpr data "typeof $0 === 'string'"
 
 /// Parses a "Line N:  message" compile-error string (set_verb_code()'s own
@@ -6683,6 +6753,9 @@ onWsMessage <-
             let parsed: obj = JS.JSON.parse text
             let header: string = parsed?header
             let lines: string[] = parsed?lines
+
+            if isGraphMutatingResult header then
+                scheduleGraphReload ()
 
             if header.StartsWith("moodev-edit-content") then
                 let content = String.concat "\n" lines
