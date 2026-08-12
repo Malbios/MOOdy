@@ -488,6 +488,21 @@ cause behind the reverted same-port LSP design above, not just a curiosity - any
 "the first thing this connection sends" to decide identity will observe an already-logged-in
 connection instead.
 
+**`MOO-World` specifically has since drifted from this baseline - it now has real per-account
+login.** Confirmed live 2026-08-12: `connect wizard` against `MOO-World`'s own running world is
+rejected as a malformed `connect <user> <password>` command, not treated as "any text logs in as
+Wizard." Everything above is still accurate as the *general*, bare-`Minimal.db` default (the
+automated test instance's `survive.test.db`, or any other freshly-seeded world, still behave
+exactly as described) - it just no longer describes `MOO-World`'s own accumulated state. This bit
+`start-ide-stack.ps1`'s LSP-bridge-listener re-bind step, which blindly sent `connect wizard` and
+had it silently rejected (wrapped in a MOO `try`/`except`), so `listen()` never actually ran and the
+LSP's live builtins/hover fetch kept failing - fixed by adding `-MooUser`/`-MooPassword` parameters
+to that script (defaulting to `wizard`/blank, so every *other*, still-bare world is unaffected) -
+see that script's own doc comment for the real account name/login shape (a multi-word account name
+needs quoting in the raw MOO connect line itself, confirmed live) and its example invocation for
+`MOO-World`. Don't assume `connect wizard` works against `MOO-World` without checking first -
+verify live, since this doc already went stale on this point once.
+
 ## Running the MOO server for local testing
 
 The `moo` binary is a Linux ELF built under WSL2 — it does not run directly from Windows.
