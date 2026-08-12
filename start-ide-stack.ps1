@@ -64,6 +64,24 @@
     Object number of that listener (e.g. 5 on MOO-World; whatever bootstrap-moo-world.ps1
     reported as `lst` for another world).
 
+.PARAMETER MooUser
+    Username to log in as on $MooPort when (re-)binding the LSP-service listener - the *only*
+    step in this script that talks to the world's real player port at all (the export step below
+    routes through the listener port instead, which logs in as its own dedicated service
+    character unconditionally regardless of what's sent - see that step's own comment). Defaults
+    to "wizard", which is correct as-is for a bare Minimal.db-derived world (no real accounting -
+    any text logs in as Wizard). A world with real per-account accounting (confirmed live against
+    MOO-World once it gained one) needs its actual wizard-equivalent account name here instead,
+    or the listen() call silently never runs (wrapped in try/except) and the listener never binds
+    - the LSP's own /lsp-bridge connections then fail immediately (connection refused), which is
+    what starves the MOOcode docs panel/hover of any live data.
+
+.PARAMETER MooPassword
+    Password for -MooUser, only needed when that account has a real, non-blank one. Passed as a
+    plain script argument rather than hardcoded, by design - keeps a real credential out of any
+    git-tracked file. Omit (default: empty) for a passwordless account, including every bare
+    Minimal.db-derived world's default "wizard".
+
 .PARAMETER TreeDir
     Content tree for this MOO world (Moo:TreeDir) - where the Sidecar exports/reads/commits
     MOOcode. Must already exist.
@@ -99,7 +117,8 @@
 
     # At the same time, a second independent world, in two more terminals:
     .\start-moo-only.ps1 -DbPath C:\dev\moo\MOO-World\world.db -Port 7780
-    .\start-ide-stack.ps1 -MooPort 7780 -LspBridgeMooPort 7782 -LspListenerObj 5 -TreeDir C:\dev\moo\MOO-World
+    .\start-ide-stack.ps1 -MooPort 7780 -LspBridgeMooPort 7782 -LspListenerObj 5 -TreeDir C:\dev\moo\MOO-World `
+        -MooUser "LSP Service Account" -MooPassword <password>
 #>
 
 param(
@@ -109,7 +128,9 @@ param(
     [Parameter(Mandatory = $true)] [int]$LspListenerObj,
     [Parameter(Mandatory = $true)] [string]$TreeDir,
     [switch]$RefreshExport,
-    [int]$ClientPort = 0
+    [int]$ClientPort = 0,
+    [string]$MooUser = 'wizard',
+    [string]$MooPassword = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -226,9 +247,19 @@ Write-Host "Ports:      Sidecar $sidecarPort / LSP $lspPort / Client $clientPort
 #
 # Doesn't persist across a MOO restart - wrapped in a MOO try/except, harmless if
 # somehow already bound (e.g. another already-running start-ide-stack.ps1 instance
-# against this same world already did it this session).
+# against this same world already did it this session). This is the only step in
+# this script that logs in on the world's real player port ($MooPort) rather than
+# through the LSP-bridge listener itself, so it's the only one that needs -MooUser/
+# -MooPassword for a world with real accounting - see those parameters' own doc
+# comments.
 . (Join-Path $repoRoot 'moo-client.ps1')
-Send-MooCommands -HostName $MooHost -Port $MooPort -Commands @(";;try listen(#$LspListenerObj, $LspBridgeMooPort); except e (ANY) endtry;") -WaitMs 1000 | Out-Null
+# Quoted so a multi-word account name (confirmed live: MOO-World's own LSP
+# service account is literally named "LSP Service Account", spaces and
+# all) survives the MOO command line's own space-tokenizing - a real login
+# with an unquoted multi-word name fails with "Incorrect number of
+# arguments" (too many space-separated tokens), not a name-not-found error.
+$mooLoginCommand = if ($MooPassword) { "connect `"$MooUser`" $MooPassword" } else { "connect `"$MooUser`"" }
+Send-MooCommands -HostName $MooHost -Port $MooPort -Commands @(";;try listen(#$LspListenerObj, $LspBridgeMooPort); except e (ANY) endtry;") -WaitMs 1000 -LoginCommand $mooLoginCommand | Out-Null
 
 # --- Build (mutex-serialized - shared obj/bin/output across every invocation) ---
 

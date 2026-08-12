@@ -6,13 +6,18 @@ function Send-MooCommands {
         [string[]]$Commands,
         [string]$HostName = '127.0.0.1',
         [int]$Port = 7777,
-        [int]$WaitMs = 2000
+        [int]$WaitMs = 2000,
+        # Overridable for a world with real per-account accounting - a bare
+        # Minimal.db-derived world's own do_login_command ignores this text
+        # entirely and always logs in as Wizard, so the default reproduces
+        # every existing caller's behavior unchanged.
+        [string]$LoginCommand = 'connect wizard'
     )
     $client = New-Object System.Net.Sockets.TcpClient
     $client.Connect($HostName, $Port)
     $stream = $client.GetStream()
 
-    $allCommands = @('connect wizard') + $Commands
+    $allCommands = @($LoginCommand) + $Commands
     foreach ($cmd in $allCommands) {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($cmd + "`r`n")
         $stream.Write($bytes, 0, $bytes.Length)
