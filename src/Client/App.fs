@@ -4218,9 +4218,23 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     let verbsTitle = document.createElement ("div")
     verbsTitle.classList.add "inspector-section-title"
     // Same "own last, inherited sorted by ascending definer id" rule as
-    // `props` above.
+    // `props` above. Inherited rows whose name is shadowed by an own row on
+    // this same object are dropped entirely first (e.g. right after
+    // "Override") - `annotateShadowedMember`'s "(shadowed by #N)" suffix is
+    // for the case where the shadowing happens somewhere *else* in the
+    // ancestor chain, not here, where the live, already-fetched data itself
+    // already says there's nothing left to show.
     let verbs: obj[] =
-        (unbox info?verbs: obj[])
+        let raw: obj[] = unbox info?verbs
+
+        let ownNames =
+            raw
+            |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef)
+            |> Array.map (fun v -> v?name: string)
+            |> Set.ofArray
+
+        raw
+        |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef || not (Set.contains (v?name: string) ownNames))
         |> Array.sortBy (fun v ->
             let d = int64 (v?definerRef: float)
             if d = objRef then System.Int64.MaxValue else d)
@@ -7103,14 +7117,13 @@ onWsMessage <-
             elif
                 header.StartsWith("moodev-owner-set-result")
                 || header.StartsWith("moodev-flag-set-result")
-                || header.StartsWith("moodev-prop-info-set-result")
                 || header.StartsWith("moodev-verb-info-set-result")
                 || header.StartsWith("moodev-verb-args-set-result")
             then
-                // owner/flag/prop-info/verb-info/verb-args changes touch
-                // data the tree never renders, so nothing to keep in sync
-                // outside the inspector pane - still fine to only refresh
-                // when that tab is active.
+                // owner/flag/verb-info/verb-args changes touch data the
+                // tree never renders, so nothing to keep in sync outside
+                // the inspector pane - still fine to only refresh when
+                // that tab is active.
                 match headerField "object: #" header with
                 | Some objNum ->
                     match System.Int64.TryParse objNum with
@@ -7119,6 +7132,38 @@ onWsMessage <-
                             loadInspector objRef None
                         else
                             inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+                    | _ -> ()
+                | None -> ()
+            elif header.StartsWith("moodev-prop-info-set-result") then
+                // Unlike the shared branch above: a property rename *can*
+                // be a corponym rename, which changes the `[$name]` suffix
+                // the tree shows for a completely different object (the
+                // corponym's target, plus any re-exported children) - never
+                // the object whose Properties table you were actually
+                // looking at (almost always #0). The `affected:` field
+                // (comma-separated `#N` refs, possibly empty) names exactly
+                // which other objects `cascadeCorponymRename` touched, so
+                // those get refreshed unconditionally; the renamed
+                // property's own object still only refreshes/reports when
+                // its own tab is active, same as before.
+                match headerField "object: #" header with
+                | Some objNum ->
+                    match System.Int64.TryParse objNum with
+                    | true, objRef ->
+                        if headerField "ok: " header = Some "1" then
+                            if activeTab = InspectorTab objRef then
+                                loadInspector objRef None
+
+                            match headerField "affected: " header with
+                            | Some affectedStr ->
+                                affectedStr.Split(',')
+                                |> Array.filter (fun s -> s <> "")
+                                |> Array.iter (fun s -> loadInspector (int64 (s.TrimStart '#')) None)
+                            | None -> ()
+                        elif activeTab = InspectorTab objRef then
+                            inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+                        else
+                            window.alert (String.concat "\n" lines)
                     | _ -> ()
                 | None -> ()
             elif header.StartsWith("moodev-verb-delete-result") then

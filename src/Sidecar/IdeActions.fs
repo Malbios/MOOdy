@@ -980,6 +980,16 @@ let addProperty
 /// affected object) rather than one combined commit - same precedent
 /// `renameVerb` already established for a single logical rename fanning
 /// out across several objects.
+///
+/// Also returns every objRef actually touched (the target, plus every
+/// child whose re-export succeeded) - `setPropertyInfo` reports these back
+/// over the wire so the client can refresh their tree rows too. Without
+/// this, the client has no way to know *which* other objects a corponym
+/// rename affected (the wire response otherwise only ever names `#0`, the
+/// property's owner) - confirmed live: a renamed corponym's tree-row label
+/// (LSP-computed, includes the `[$name]` suffix) stays stale until an
+/// explicit refresh, even though the underlying live-info fetch that
+/// drives it is already fully live/correct.
 let private cascadeCorponymRename
     (config: Config)
     (session: Session)
@@ -987,9 +997,10 @@ let private cascadeCorponymRename
     (oldName: string)
     (newName: string)
     (ct: CancellationToken)
-    : Task<string list> =
+    : Task<int64 list * string list> =
     task {
         let diagnostics = ResizeArray<string>()
+        let affected = ResizeArray<int64>()
         let evalRunner = evalOnSession session
 
         try
@@ -1014,6 +1025,7 @@ let private cascadeCorponymRename
             diagnostics.Add(sprintf "(old $%s directory cleanup failed: %s)" oldName ex.Message)
 
         let! targetGitError = exportAndCommitObject config session targetObjRef newName GitStore.Modified false ct
+        affected.Add(targetObjRef)
         targetGitError |> Option.iter (fun m -> diagnostics.Add(sprintf "($%s re-export failed: %s)" newName m))
 
         let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
@@ -1034,9 +1046,12 @@ let private cascadeCorponymRename
             | None -> () // I3: uncorified, not versioned, nothing to fix
             | Some childName ->
                 let! childGitError = exportAndCommitObject config session childRef "parents" GitStore.Modified false ct
-                childGitError |> Option.iter (fun m -> diagnostics.Add(sprintf "($%s parents re-export failed: %s)" childName m))
 
-        return List.ofSeq diagnostics
+                match childGitError with
+                | None -> affected.Add(childRef)
+                | Some m -> diagnostics.Add(sprintf "($%s parents re-export failed: %s)" childName m)
+
+        return List.ofSeq affected, List.ofSeq diagnostics
     }
 
 /// Changes any/all of an *existing* property's name, owner, and perms in
@@ -1087,26 +1102,30 @@ let setPropertyInfo
         let ok = root.GetProperty("ok").GetInt32() = 1
         let errtext = root.GetProperty("errtext").GetString()
 
-        let! diagnostics =
+        let! affected, diagnostics =
             task {
                 if not ok then
-                    return [ errtext ]
+                    return [], [ errtext ]
                 else
                     let! gitError = exportAndCommitObject config session objRef pname GitStore.Modified false ct
                     let renameDiag = gitError |> Option.map (fun m -> [ "(changed, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
 
-                    let! cascadeDiag =
+                    let! cascadeAffected, cascadeDiag =
                         match corponymTarget with
                         | Some targetObjRef when newName <> pname -> cascadeCorponymRename config session targetObjRef pname newName ct
-                        | _ -> task { return [] }
+                        | _ -> task { return [], [] }
 
-                    return renameDiag @ cascadeDiag
+                    return cascadeAffected, renameDiag @ cascadeDiag
             }
 
         do!
             sendWire
                 webSocket
-                (sprintf "moodev-prop-info-set-result object: #%d ok: %d" objRef (if ok then 1 else 0))
+                (sprintf
+                    "moodev-prop-info-set-result object: #%d ok: %d affected: %s"
+                    objRef
+                    (if ok then 1 else 0)
+                    (affected |> List.map (sprintf "#%d") |> String.concat ","))
                 diagnostics
                 ct
     }
