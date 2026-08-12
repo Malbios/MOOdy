@@ -4223,18 +4223,30 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     // "Override") - `annotateShadowedMember`'s "(shadowed by #N)" suffix is
     // for the case where the shadowing happens somewhere *else* in the
     // ancestor chain, not here, where the live, already-fetched data itself
-    // already says there's nothing left to show.
+    // already says there's nothing left to show. `overriddenFrom` records
+    // which ancestor each own, shadowing verb would otherwise have come
+    // from, so the row that actually renders can say so - see its own use
+    // in the row-render loop below.
+    let rawVerbs: obj[] = unbox info?verbs
+
+    let ownVerbNames =
+        rawVerbs
+        |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef)
+        |> Array.map (fun v -> v?name: string)
+        |> Set.ofArray
+
+    let overriddenFrom =
+        rawVerbs
+        |> Array.filter (fun v -> int64 (v?definerRef: float) <> objRef && Set.contains (v?name: string) ownVerbNames)
+        |> Array.fold
+            (fun m v ->
+                let name = v?name: string
+                if Map.containsKey name m then m else Map.add name (int64 (v?definerRef: float)) m)
+            Map.empty
+
     let verbs: obj[] =
-        let raw: obj[] = unbox info?verbs
-
-        let ownNames =
-            raw
-            |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef)
-            |> Array.map (fun v -> v?name: string)
-            |> Set.ofArray
-
-        raw
-        |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef || not (Set.contains (v?name: string) ownNames))
+        rawVerbs
+        |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef || not (Set.contains (v?name: string) ownVerbNames))
         |> Array.sortBy (fun v ->
             let d = int64 (v?definerRef: float)
             if d = objRef then System.Int64.MaxValue else d)
@@ -4298,17 +4310,39 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                 nameInput.classList.add "inspector-property-value"
                 nameInput.value <- vFullNames
 
-                mkEditableCell verbName nameInput (fun () ->
-                    let newNames = nameInput.value.Trim()
+                let td =
+                    mkEditableCell verbName nameInput (fun () ->
+                        let newNames = nameInput.value.Trim()
 
-                    if newNames <> "" && newNames <> vFullNames then
-                        sendAction
-                            [ "action" ==> "set-verb-info"
-                              "obj" ==> int objRef
-                              "verb" ==> verbName
-                              "newNames" ==> newNames
-                              "ownerExpr" ==> sprintf "#%d" vOwnerRef
-                              "perms" ==> vPerms ])
+                        if newNames <> "" && newNames <> vFullNames then
+                            sendAction
+                                [ "action" ==> "set-verb-info"
+                                  "obj" ==> int objRef
+                                  "verb" ==> verbName
+                                  "newNames" ==> newNames
+                                  "ownerExpr" ==> sprintf "#%d" vOwnerRef
+                                  "perms" ==> vPerms ])
+
+                // The only remaining way to reach the ancestor this verb
+                // overrides - the inherited row that used to link there no
+                // longer renders at all once an own copy exists (see this
+                // section's own comment above).
+                match Map.tryFind verbName overriddenFrom with
+                | Some ancestorRef ->
+                    let overrideSuffix = document.createElement ("span")
+                    overrideSuffix.classList.add "inspector-shadowed-suffix"
+                    overrideSuffix.classList.add "inspector-link"
+                    overrideSuffix.textContent <- sprintf " (overrides #%d)" ancestorRef
+
+                    overrideSuffix.onclick <-
+                        fun ev ->
+                            ev.stopPropagation ()
+                            openOrSwitchToInspector ancestorRef
+
+                    td.appendChild overrideSuffix |> ignore
+                | None -> ()
+
+                td
             else
                 let td = document.createElement ("td")
                 td.appendChild (document.createTextNode verbName) |> ignore
