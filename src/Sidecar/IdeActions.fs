@@ -957,6 +957,88 @@ let addProperty
                 ct
     }
 
+/// After a corponym-backing property on #0 is renamed (`setPropertyInfo`
+/// below detects this - a corponym is just an OBJ-valued property on #0,
+/// per `Exporter.getCorponyms`), the rename's own `exportAndCommitObject`
+/// call only re-exports #0 itself + refreshes `corponyms.moo` - it has no
+/// way to know the target object's own directory/self-header, or any
+/// *other* object's `parents:` line, still textually embeds the old
+/// `$name`. Left alone, this is exactly the "dangling parent reference"
+/// failure `Metadata.Loader.load` throws on next LSP startup - confirmed
+/// live against a real content tree (a `$heartbeat` -> `$heartbeating`
+/// rename). Cascades: (1) removes the old `objects/<oldName>/` directory
+/// (same cleanup `recycleObject` above already does for its own case), (2)
+/// re-exports the target object itself so `objects/<newName>/` exists with
+/// a correct self-header, (3) re-exports every direct child of the target
+/// that's itself corified (I3 - only corified objects are ever exported),
+/// since `parents:` only ever lists *direct* parents - each such call
+/// re-renders that child's `parents:` line against the now-current
+/// corponym map, picking up `$<newName>` in place of the stale `$<oldName>`.
+/// Best-effort throughout, same philosophy as `exportAndCommitObject`
+/// itself - the rename already succeeded live; a failure here is reported,
+/// not treated as undoing it. Multiple separate git commits (one per
+/// affected object) rather than one combined commit - same precedent
+/// `renameVerb` already established for a single logical rename fanning
+/// out across several objects.
+let private cascadeCorponymRename
+    (config: Config)
+    (session: Session)
+    (targetObjRef: int64)
+    (oldName: string)
+    (newName: string)
+    (ct: CancellationToken)
+    : Task<string list> =
+    task {
+        let diagnostics = ResizeArray<string>()
+        let evalRunner = evalOnSession session
+
+        try
+            let oldDir = System.IO.Path.Combine(config.TreeDir, "objects", oldName)
+
+            if System.IO.Directory.Exists(oldDir) then
+                let removedPaths =
+                    System.IO.Directory.GetFiles(oldDir, "*", System.IO.SearchOption.AllDirectories)
+                    |> Array.map (fun fullPath -> System.IO.Path.GetRelativePath(config.TreeDir, fullPath).Replace('\\', '/'))
+                    |> List.ofArray
+
+                System.IO.Directory.Delete(oldDir, true)
+
+                use repo = new LibGit2Sharp.Repository(config.TreeDir)
+
+                let message =
+                    GitStore.buildCommitMessage [ { Corponym = oldName; Name = oldName + " -> " + newName; Kind = GitStore.Removed } ]
+
+                GitStore.commitChangedFiles repo config.SessionId [] removedPaths message config.GitAuthorName config.GitAuthorEmail
+                |> ignore
+        with ex ->
+            diagnostics.Add(sprintf "(old $%s directory cleanup failed: %s)" oldName ex.Message)
+
+        let! targetGitError = exportAndCommitObject config session targetObjRef newName GitStore.Modified false ct
+        targetGitError |> Option.iter (fun m -> diagnostics.Add(sprintf "($%s re-export failed: %s)" newName m))
+
+        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+
+        let! childrenJson =
+            evalRunner
+                (sprintf "kids = children(#%d); kids_out = {}; for k in (kids) kids_out = {@kids_out, tostr(k)}; endfor" targetObjRef)
+                "kids_out"
+                ct
+
+        let children =
+            childrenJson.RootElement.EnumerateArray()
+            |> Seq.map (fun e -> int64 ((e.GetString(): string).TrimStart('#')))
+            |> List.ofSeq
+
+        for childRef in children do
+            match Map.tryFind childRef corponymsByObjnum with
+            | None -> () // I3: uncorified, not versioned, nothing to fix
+            | Some childName ->
+                let! childGitError = exportAndCommitObject config session childRef "parents" GitStore.Modified false ct
+                childGitError |> Option.iter (fun m -> diagnostics.Add(sprintf "($%s parents re-export failed: %s)" childName m))
+
+        return List.ofSeq diagnostics
+    }
+
 /// Changes any/all of an *existing* property's name, owner, and perms in
 /// one call - `set_property_info(obj, pname, {owner, perms, new-name})`
 /// (confirmed against `ToastStunt/src/property.cc`'s `bf_set_prop_info`).
@@ -983,6 +1065,20 @@ let setPropertyInfo
         let permsLit = quote perms
         let ownerLit = quote ownerExpr
 
+        // A corponym is just an OBJ-valued property on #0 (`Exporter.getCorponyms`'s
+        // own detection rule) - renaming one through this fully generic
+        // property-rename action is otherwise indistinguishable from renaming
+        // any other property. Captured *before* the rename since it's the old
+        // name we need to look up.
+        let! corponymTarget =
+            task {
+                if objRef = 0L then
+                    let! corponymsByObjnum = Exporter.getCorponyms (evalOnSession session) ct
+                    return corponymsByObjnum |> Map.toList |> List.tryFind (fun (_, name) -> name = pname) |> Option.map fst
+                else
+                    return None
+            }
+
         let statements =
             $"""ok = 0; errtext = ""; try ownerResult = eval("return " + {ownerLit} + ";"); if (ownerResult[1]) try set_property_info({o}, {pnameLit}, {{ownerResult[2], {permsLit}, {newNameLit}}}); ok = 1; except err2 (ANY) errtext = tostr(err2[2]); endtry else errtext = "parse error (owner)"; endif except err (ANY) errtext = tostr(err[2]); endtry"""
 
@@ -997,7 +1093,14 @@ let setPropertyInfo
                     return [ errtext ]
                 else
                     let! gitError = exportAndCommitObject config session objRef pname GitStore.Modified false ct
-                    return gitError |> Option.map (fun m -> [ "(changed, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+                    let renameDiag = gitError |> Option.map (fun m -> [ "(changed, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+
+                    let! cascadeDiag =
+                        match corponymTarget with
+                        | Some targetObjRef when newName <> pname -> cascadeCorponymRename config session targetObjRef pname newName ct
+                        | _ -> task { return [] }
+
+                    return renameDiag @ cascadeDiag
             }
 
         do!
