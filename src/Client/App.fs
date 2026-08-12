@@ -2983,6 +2983,18 @@ and private mkAddTrigger (label: string) (targets: HTMLElement list) : HTMLEleme
 
             triggerBtn.title <- (if expanded then "Cancel" else label)
 
+            // Same focus-on-reveal idiom `mkEditableCell`'s own "✎" pencil
+            // already uses just above - a generic query for whichever
+            // focusable control the revealed target actually contains,
+            // rather than every call site passing its own input through.
+            if expanded then
+                targets
+                |> List.tryPick (fun t ->
+                    match t.querySelector ("input, select") with
+                    | null -> None
+                    | el -> Some el)
+                |> Option.iter (fun el -> (el :?> HTMLElement).focus ())
+
     triggerBtn
 
 /// A "▾"/"▸" toggle that shows/hides `contentEl` - a genuinely different
