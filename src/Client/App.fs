@@ -4145,9 +4145,18 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                           "name" ==> pname
                           "valueText" ==> input.value ]
 
-        valueTd.appendChild input |> ignore
+        // The value input and its toggle button share one row (see
+        // .inspector-property-value-row in style.css) so the button sits
+        // beside the input instead of wrapping onto its own line below it -
+        // the ANSI preview and the structured editor itself stay full-width
+        // blocks underneath, unchanged.
+        let valueRow = document.createElement ("div")
+        valueRow.classList.add "inspector-property-value-row"
+        valueRow.appendChild input |> ignore
+        valueRow.appendChild structuredToggleBtn |> ignore
+
+        valueTd.appendChild valueRow |> ignore
         valueTd.appendChild preview |> ignore
-        valueTd.appendChild structuredToggleBtn |> ignore
         valueTd.appendChild structuredContainer |> ignore
         tr.appendChild valueTd |> ignore
 
