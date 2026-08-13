@@ -1343,6 +1343,22 @@ html, body {
   font-size: inherit;
 }
 
+.inspector-property-value-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+/* Overrides the base .inspector-property-value width so it shrinks to make
+   room for the toggle button beside it, instead of forcing the button onto
+   a second line - scoped to this row only, since that class is shared by
+   many unrelated inputs elsewhere in this pane. */
+.inspector-property-value-row .inspector-property-value {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+
 .inspector-property-value:focus {
   outline: none;
   border-color: #6cf;
@@ -1369,10 +1385,10 @@ html, body {
   color: #ccc;
   cursor: pointer;
   padding: 0.1em 0.4em;
-  margin-top: 0.3em;
   font-family: inherit;
   font-size: 0.9em;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .inspector-structured-toggle-btn:hover {
