@@ -56,10 +56,10 @@ let private moocodeLanguage: obj =
             'this', 'caller', 'player', 'verb', 'args', 'argstr',
             'dobj', 'dobjstr', 'prep', 'prepstr', 'iobj', 'iobjstr'
         ],
-        constants: ['true', 'false', 'E_NONE'],
+        constants: ['true', 'false'],
         tokenizer: {
             root: [
-                [/\bE_[A-Z]+\b/, 'constant'],
+                [/\bE_[A-Z]+\b/, 'constant.error'],
                 [/[a-zA-Z_$][\w$]*/, {
                     cases: {
                         '@keywords': 'keyword',
@@ -114,12 +114,31 @@ let private moocodeLanguageConfiguration: obj =
         }
     })"""
 
-/// Registers the "moocode" language with Monaco. Call once, before creating
-/// any editor that might use it.
+/// A "vs-dark" variant adding one rule: MOO error-code constants
+/// (`constant.error`, the Monarch grammar's `E_[A-Z]+` token above) get
+/// their own bold purple instead of inheriting `constant`'s blue
+/// (`#569CD6`) - which vs-dark's own `keyword` rule already uses too, so
+/// plain `E_INVARG`/`E_PERM`/etc. were indistinguishable from control
+/// keywords like `if`/`while`. `C586C0` isn't a new color - it's vs-dark's
+/// own existing purple (`keyword.flow`, confirmed directly in the installed
+/// package's own theme table,
+/// `node_modules/monaco-editor/esm/vs/editor/standalone/common/themes.js`),
+/// just unused by this grammar until now (it only ever emits plain
+/// `'keyword'`, never `'keyword.flow'`).
+let private moocodeTheme: obj =
+    createObj
+        [ "base" ==> "vs-dark"
+          "inherit" ==> true
+          "rules" ==> [| createObj [ "token" ==> "constant.error"; "foreground" ==> "C586C0"; "fontStyle" ==> "bold" ] |]
+          "colors" ==> createObj [] ]
+
+/// Registers the "moocode" language and its theme with Monaco. Call once,
+/// before creating any editor that might use it.
 let registerMoocodeLanguage () : unit =
     monaco?languages?register (createObj [ "id" ==> "moocode" ])
     monaco?languages?setMonarchTokensProvider ("moocode", moocodeLanguage)
     monaco?languages?setLanguageConfiguration ("moocode", moocodeLanguageConfiguration)
+    monaco?editor?defineTheme ("moocode-dark", moocodeTheme)
 
 /// Three fixed local boilerplate snippets - a verb's arg-spec scatter
 /// skeleton, a `try`/`except (ANY)` guard, and this project's own leading
@@ -291,15 +310,15 @@ let create (container: Browser.Types.HTMLElement) : IStandaloneCodeEditor =
         createObj
             [ "value" ==> ""
               "language" ==> "moocode"
-              "theme" ==> "vs-dark"
+              "theme" ==> "moocode-dark"
               "automaticLayout" ==> true
               "minimap" ==> createObj [ "enabled" ==> true ]
               // Confirmed live: without this, Monaco never calls a
               // registered `DocumentSemanticTokensProvider` at all, even
               // though registration itself succeeds silently - this option
               // defaults to `'configuredByTheme'` (`editor.api.d.ts`'s own
-              // doc comment), and the built-in `vs-dark` theme used here
-              // doesn't opt in on its own.
+              // doc comment), and `moocode-dark` (a `vs-dark` variant, below)
+              // doesn't opt in on its own either.
               "semanticHighlighting.enabled" ==> true ]
 
     monaco?editor?create (container, options)
@@ -406,7 +425,7 @@ type IDiffEditor =
 let createDiffEditor (container: Browser.Types.HTMLElement) : IDiffEditor =
     let options =
         createObj
-            [ "theme" ==> "vs-dark"
+            [ "theme" ==> "moocode-dark"
               "automaticLayout" ==> true
               "readOnly" ==> true
               "renderSideBySide" ==> true ]
