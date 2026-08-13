@@ -5693,10 +5693,10 @@ and private renderDocsList (filterText: string) : unit =
             match kind with
             | "keyword" -> 0
             | "variable" -> 1
-            | "builtin" -> 2
-            | "corified-verb" -> 3
-            | "error" -> 4
-            | _ -> 2
+            | "type" -> 2
+            | "builtin" -> 3
+            | "corified-verb" -> 4
+            | _ -> 3
 
         let filtered =
             allEntries

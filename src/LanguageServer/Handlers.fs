@@ -461,6 +461,28 @@ let private implicitVariableHelp (name: string) : string option =
     | "iobjstr" -> Some "The raw string the command parser matched as the indirect object."
     | _ -> None
 
+/// The type-tag constants every world binds as real global variables,
+/// confirmed directly against `ToastStunt/src/sym_table.cc:88-121`
+/// (`new_builtin_names`) rather than assumed - `NUM`/`OBJ`/`STR`/`LIST`/`ERR`
+/// unconditionally, plus `INT`/`FLOAT`/`MAP`/`ANON`/`WAIF`/`BOOL` gated on DB
+/// version but long-standard on any modern world. Each compares equal to
+/// `typeof(x)`'s result for a value of that type - `NUM` is a legacy alias
+/// for `INT`, both bound simultaneously, not superseded.
+let private typeConstantHelp (name: string) : string option =
+    match name with
+    | "NUM" -> Some "Legacy alias for `INT` - `typeof(x) == NUM` is equivalent to `typeof(x) == INT`."
+    | "OBJ" -> Some "The type tag for object references (`#N`) - `typeof(x) == OBJ`."
+    | "STR" -> Some "The type tag for strings - `typeof(x) == STR`."
+    | "LIST" -> Some "The type tag for lists - `typeof(x) == LIST`."
+    | "ERR" -> Some "The type tag for error values (e.g. `E_PERM`) - `typeof(x) == ERR`."
+    | "INT" -> Some "The type tag for integers - `typeof(x) == INT`."
+    | "FLOAT" -> Some "The type tag for floating-point numbers - `typeof(x) == FLOAT`."
+    | "MAP" -> Some "The type tag for maps (`[key -> value, ...]`) - `typeof(x) == MAP`."
+    | "ANON" -> Some "The type tag for anonymous objects - `typeof(x) == ANON`."
+    | "WAIF" -> Some "The type tag for waifs - `typeof(x) == WAIF`."
+    | "BOOL" -> Some "The type tag for booleans (`true`/`false`) - `typeof(x) == BOOL`."
+    | _ -> None
+
 /// One documentable "thing" in MOOcode - a control keyword, an implicit
 /// variable, or a builtin function - unified into one flat, searchable
 /// catalog for the client's docs sidebar (`moodev/getMoocodeDocs`).
@@ -502,6 +524,11 @@ let private allKeywords: Language.Lexer.Keyword list =
 /// so there's exactly one place the actual descriptions live.
 let private implicitVariableNames =
     [ "this"; "caller"; "player"; "verb"; "args"; "argstr"; "dobj"; "dobjstr"; "prep"; "prepstr"; "iobj"; "iobjstr" ]
+
+/// Same "one list, prose lives elsewhere" split as `implicitVariableNames`
+/// above, for `typeConstantHelp`.
+let private typeConstantNames =
+    [ "NUM"; "OBJ"; "STR"; "LIST"; "ERR"; "INT"; "FLOAT"; "MAP"; "ANON"; "WAIF"; "BOOL" ]
 
 /// The doc-comment convention real ToastCore verbs actually use (confirmed
 /// against `ToastStunt/ToastCore.db`, e.g. `#0:chparent`'s single-line
@@ -705,13 +732,13 @@ let private corifiedVerbDocEntries (graph: Graph) : MoocodeDocEntry list =
                 | _ -> None))
 
 /// Full catalog for the client's docs sidebar: every control keyword,
-/// implicit variable, live builtin, and documented corified verb - reusing
-/// the exact same prose hover already shows for the first three
-/// (`keywordHelp`/`implicitVariableHelp`/`fn.Description`), so those
-/// surfaces can never disagree; this only ever enumerates *which* existing
-/// function to call for each name, never duplicates the text itself. The
-/// corified-verb entries are the one genuinely new source, straight from the
-/// corpus's own doc-commented verbs.
+/// implicit variable, type-tag constant, live builtin, and documented
+/// corified verb - reusing the exact same prose hover already shows for the
+/// first two (`keywordHelp`/`implicitVariableHelp`/`fn.Description`), so
+/// those surfaces can never disagree; this only ever enumerates *which*
+/// existing function to call for each name, never duplicates the text
+/// itself. The corified-verb entries are the one genuinely new source,
+/// straight from the corpus's own doc-commented verbs.
 let moocodeDocs (graph: Graph) (liveBuiltins: Map<string, BuiltinFunc>) : MoocodeDocEntry[] =
     let keywordEntries =
         allKeywords
@@ -731,6 +758,16 @@ let moocodeDocs (graph: Graph) (liveBuiltins: Map<string, BuiltinFunc>) : Moocod
                   Description = desc
                   Kind = "variable" }))
 
+    let typeEntries =
+        typeConstantNames
+        |> List.choose (fun name ->
+            typeConstantHelp name
+            |> Option.map (fun desc ->
+                { Name = name
+                  Signature = name
+                  Description = desc
+                  Kind = "type" }))
+
     let builtinEntries =
         liveBuiltins
         |> Map.toList
@@ -740,7 +777,8 @@ let moocodeDocs (graph: Graph) (liveBuiltins: Map<string, BuiltinFunc>) : Moocod
               Description = fn.Description |> Option.defaultValue "Built-in function."
               Kind = "builtin" })
 
-    keywordEntries @ variableEntries @ builtinEntries @ corifiedVerbDocEntries graph |> List.toArray
+    keywordEntries @ variableEntries @ typeEntries @ builtinEntries @ corifiedVerbDocEntries graph
+    |> List.toArray
 
 /// Hover text for a verb call whose receiver *couldn't* be resolved
 /// statically (`this:foo()`, `who:tell()`) - best-effort via
