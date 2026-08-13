@@ -161,7 +161,18 @@ let create (wsUrl: string) : SidecarBridge =
                             current <- Some state
                             readLoop state |> ignore
                             return Some state
-                        with _ ->
+                        with ex ->
+                            // Previously swallowed with no trace at all - a
+                            // failed connect here degrades silently to "no
+                            // hover", indistinguishable from the MOO
+                            // genuinely not knowing the name. Printed (not
+                            // just logged via ILogger) so it lands in the
+                            // same console/log file `GraphStore.fs`'s own
+                            // `printfn` calls already use, confirmed live as
+                            // the only place this process's stdout is
+                            // captured (test.ps1/test-instance-start.ps1
+                            // redirect it to `*.lsp.log`).
+                            printfn "SidecarBridge: failed to connect to %s: %s" wsUrl ex.Message
                             socket.Dispose()
                             current <- None
                             return None
