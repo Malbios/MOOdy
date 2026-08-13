@@ -267,7 +267,7 @@ let runIsolatedTests
 
         try
             do! waitForPort port 30.0 ct
-            let! conn = MooEval.connect "127.0.0.1" port "wizard" ct
+            let! conn = MooEval.connect "127.0.0.1" port "wizard" "" ct
             testConn <- Some conn
 
             for req in requests do

@@ -34,24 +34,27 @@ let mutable private currentTarget: MooTarget =
       LspBridgePort = 7780
       TreeDir = "../../../Survive" }
 
-/// `export <outputDir> [host] [port] [--user <name>]` runs the Phase 1
-/// exporter (`Sidecar.Exporter`) against a wizard connection and exits - a
-/// one-shot batch tool, distinct from the always-on WebSocket bridge below.
-/// Host/port default to the same values `appsettings.json` gives the bridge
-/// (127.0.0.1:7777); pass an explicit host/port to target e.g. the headless
-/// test instance on 7778 instead. `--user` defaults to `"wizard"` (a bare
-/// `Minimal.db` world's own unaccounted default, per `MooEval.connect`'s own
-/// comment) - a real, separately-accounted world needs its actual
-/// (passwordless) wizard-equivalent character name here instead, confirmed
-/// live against a real HellMOO-derived world where the bare "wizard" login
-/// silently never authenticated, leaving the connection to sit until
-/// ToastStunt's own 300-second not-logged-in timeout killed it.
-let private runExport (outputDir: string) (host: string) (port: int) (username: string) : int =
+/// `export <outputDir> [host] [port] [--user <name>] [--password <pw>]` runs
+/// the Phase 1 exporter (`Sidecar.Exporter`) against a wizard connection and
+/// exits - a one-shot batch tool, distinct from the always-on WebSocket
+/// bridge below. Host/port default to the same values `appsettings.json`
+/// gives the bridge (127.0.0.1:7777); pass an explicit host/port to target
+/// e.g. the headless test instance on 7778 instead. `--user` defaults to
+/// `"wizard"` (a bare `Minimal.db` world's own unaccounted default, per
+/// `MooEval.connect`'s own comment). A real, separately-accounted world
+/// needs its actual wizard-equivalent character name here - and, if that
+/// account has a real, non-blank password, `--password` too (previously
+/// unsupported entirely: a bare "wizard" login against such a world silently
+/// never authenticated, leaving the connection to sit until this exact
+/// symptom - `Exporter.getCorponyms`'s eval timing out after 90s waiting for
+/// a response from a session with no real permissions - confirmed live
+/// against `MOO-World` after it gained real accounting).
+let private runExport (outputDir: string) (host: string) (port: int) (username: string) (password: string) : int =
     use cts = new CancellationTokenSource()
 
     let work =
         task {
-            let! conn = MooEval.connect host port username cts.Token
+            let! conn = MooEval.connect host port username password cts.Token
 
             try
                 do! Exporter.exportTree conn outputDir cts.Token
@@ -62,18 +65,18 @@ let private runExport (outputDir: string) (host: string) (port: int) (username: 
     work.GetAwaiter().GetResult()
     0
 
-/// `import <treeDir> [host] [port] [--user <name>] [--apply]` reads a tree
-/// written by `export` and applies it to the target. Dry-run (prints the
-/// planned operations, `Importer.describePlan`) unless `--apply` is passed -
-/// the first component in this project that writes to a live MOO, so it
-/// defaults to safe/preview-only per the Phase 2 plan's decision #5. `--user`
-/// - see `runExport`'s own comment.
-let private runImport (treeDir: string) (host: string) (port: int) (username: string) (apply: bool) : int =
+/// `import <treeDir> [host] [port] [--user <name>] [--password <pw>] [--apply]`
+/// reads a tree written by `export` and applies it to the target. Dry-run
+/// (prints the planned operations, `Importer.describePlan`) unless `--apply`
+/// is passed - the first component in this project that writes to a live
+/// MOO, so it defaults to safe/preview-only per the Phase 2 plan's decision
+/// #5. `--user`/`--password` - see `runExport`'s own comment.
+let private runImport (treeDir: string) (host: string) (port: int) (username: string) (password: string) (apply: bool) : int =
     use cts = new CancellationTokenSource()
 
     let work =
         task {
-            let! conn = MooEval.connect host port username cts.Token
+            let! conn = MooEval.connect host port username password cts.Token
 
             try
                 let corponyms, objects = TreeParser.parseTree treeDir
@@ -200,7 +203,7 @@ let private runPromoteDiff (treeDir: string) (toSha: string option) : int =
 
     0
 
-/// `promote <treeDir> <targetHost> <targetPort> [--to <sha>] [--apply]` -
+/// `promote <treeDir> <targetHost> <targetPort> [--user <name>] [--password <pw>] [--to <sha>] [--apply]` -
 /// "promotion is not a second system, it's the importer with a different
 /// target host" (main plan's own words): materializes the target commit's
 /// tree to a temp directory and runs the *unmodified* Phase 2 importer
@@ -209,8 +212,17 @@ let private runPromoteDiff (treeDir: string) (toSha: string option) : int =
 /// against the materialized (intended) tree - simultaneously deploy
 /// verification and drift detection, per the main plan - and only a match
 /// actually moves `production`. Rollback is this same command with `--to`
-/// pointing at an earlier commit; no separate code path.
-let private runPromote (treeDir: string) (host: string) (port: int) (username: string) (toSha: string option) (apply: bool) : int =
+/// pointing at an earlier commit; no separate code path. `--user`/
+/// `--password` - see `runExport`'s own comment.
+let private runPromote
+    (treeDir: string)
+    (host: string)
+    (port: int)
+    (username: string)
+    (password: string)
+    (toSha: string option)
+    (apply: bool)
+    : int =
     use repo = new Repository(treeDir)
     let targetCommit = resolveTargetCommit repo toSha
 
@@ -224,7 +236,7 @@ let private runPromote (treeDir: string) (host: string) (port: int) (username: s
 
     let work =
         task {
-            let! conn = MooEval.connect host port username cts.Token
+            let! conn = MooEval.connect host port username password cts.Token
 
             try
                 let corponyms, objects = TreeParser.parseTree materializedDir
@@ -335,7 +347,7 @@ let private reconfigureTarget
             // port's own listener object logs in as its fixed service
             // character regardless (see this function's own doc comment,
             // point 1), so there's no real account name to thread through.
-            let! conn = MooEval.connect newHost newLspBridgePort "wizard" ct
+            let! conn = MooEval.connect newHost newLspBridgePort "wizard" "" ct
 
             try
                 let isFreshTree = not (Directory.Exists(Path.Combine(newTreeDir, ".git")))
@@ -735,18 +747,30 @@ let private extractUserFlag (args: string[]) : string * string[] =
         value, remaining
     | _ -> "wizard", args
 
+/// Same shape as `extractUserFlag` above, for `--password <pw>` - defaults
+/// to `""` (no password), matching `MooEval.connect`'s own no-password
+/// default for a bare `Minimal.db` world or a passwordless account.
+let private extractPasswordFlag (args: string[]) : string * string[] =
+    match args |> Array.tryFindIndex (fun a -> a = "--password") with
+    | Some idx when idx + 1 < args.Length ->
+        let value = args.[idx + 1]
+        let remaining = Array.append args.[.. idx - 1] args.[idx + 2 ..]
+        value, remaining
+    | _ -> "", args
+
 [<EntryPoint>]
 let main args =
     match args with
     | _ when args.Length >= 2 && args.[0] = "export" ->
-        let username, positional = extractUserFlag args.[1..]
+        let username, afterUser = extractUserFlag args.[1..]
+        let password, positional = extractPasswordFlag afterUser
 
         match positional with
-        | [| outputDir |] -> runExport outputDir "127.0.0.1" 7777 username
-        | [| outputDir; host |] -> runExport outputDir host 7777 username
-        | [| outputDir; host; port |] -> runExport outputDir host (int port) username
+        | [| outputDir |] -> runExport outputDir "127.0.0.1" 7777 username password
+        | [| outputDir; host |] -> runExport outputDir host 7777 username password
+        | [| outputDir; host; port |] -> runExport outputDir host (int port) username password
         | _ ->
-            eprintfn "Usage: export <outputDir> [host] [port] [--user <name>]"
+            eprintfn "Usage: export <outputDir> [host] [port] [--user <name>] [--password <pw>]"
             1
     | [| "compare-trees"; treeA; treeB |] -> runCompareTrees treeA treeB
     | [| "squash-wip"; treeDir; sessionId; message |] -> runSquashWip treeDir sessionId message
@@ -755,15 +779,15 @@ let main args =
         runCheckpoint args.[1] args.[2] args.[3] (args.[4..] |> List.ofArray)
     | _ when args.Length >= 2 && args.[0] = "import" ->
         let apply = args |> Array.contains "--apply"
-        let username, positional1 = extractUserFlag (args.[1..] |> Array.filter (fun a -> a <> "--apply"))
-        let positional = positional1
+        let username, afterUser = extractUserFlag (args.[1..] |> Array.filter (fun a -> a <> "--apply"))
+        let password, positional = extractPasswordFlag afterUser
 
         match positional with
-        | [| treeDir |] -> runImport treeDir "127.0.0.1" 7777 username apply
-        | [| treeDir; host |] -> runImport treeDir host 7777 username apply
-        | [| treeDir; host; port |] -> runImport treeDir host (int port) username apply
+        | [| treeDir |] -> runImport treeDir "127.0.0.1" 7777 username password apply
+        | [| treeDir; host |] -> runImport treeDir host 7777 username password apply
+        | [| treeDir; host; port |] -> runImport treeDir host (int port) username password apply
         | _ ->
-            eprintfn "Usage: import <treeDir> [host] [port] [--user <name>] [--apply]"
+            eprintfn "Usage: import <treeDir> [host] [port] [--user <name>] [--password <pw>] [--apply]"
             1
     | _ when args.Length >= 2 && args.[0] = "promote-diff" ->
         let toSha, positional = extractToFlag args.[1..]
@@ -777,12 +801,15 @@ let main args =
         let apply = args |> Array.contains "--apply"
         let toSha, positional1 = extractToFlag args.[1..]
         let username, positional2 = extractUserFlag positional1
-        let positional = positional2 |> Array.filter (fun a -> a <> "--apply")
+        let password, positional3 = extractPasswordFlag positional2
+        let positional = positional3 |> Array.filter (fun a -> a <> "--apply")
 
         match positional with
-        | [| treeDir; host; port |] -> runPromote treeDir host (int port) username toSha apply
+        | [| treeDir; host; port |] -> runPromote treeDir host (int port) username password toSha apply
         | _ ->
-            eprintfn "Usage: promote <treeDir> <targetHost> <targetPort> [--user <name>] [--to <sha>] [--apply]"
+            eprintfn
+                "Usage: promote <treeDir> <targetHost> <targetPort> [--user <name>] [--password <pw>] [--to <sha>] [--apply]"
+
             1
     | _ ->
         let builder = WebApplication.CreateBuilder(args)

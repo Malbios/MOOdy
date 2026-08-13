@@ -26,23 +26,30 @@ type Connection =
 
 let private sentinel = "###MOOVCS"
 
-/// Opens a TCP connection to the MOO and logs in as `username` - a bare
-/// `connect <username>`, no password. Works unmodified against a bare
-/// `Minimal.db` world (no real accounting - any text logs in as Wizard, see
-/// MOOdy's CLAUDE.md) with the default `"wizard"`, and equally against a
-/// real, separately-accounted world *if* the target account's password is
-/// genuinely blank - confirmed live against a real HellMOO-derived world
-/// where the wizard-equivalent character's own name (not literally
-/// "wizard") had to be passed here instead; a world requiring a real,
-/// non-blank password needs a different mechanism entirely (not just an
-/// extra CLI argument), out of scope for this project's own single-developer
-/// dev tooling.
-let connect (host: string) (port: int) (username: string) (ct: CancellationToken) : Task<Connection> =
+/// Opens a TCP connection to the MOO and logs in as `username`, with an
+/// optional `password` (`""` - no real accounting, or the account's password
+/// genuinely is blank - sends a bare `connect "<username>"`, matching this
+/// function's old, only-ever behavior). The username is always quoted, same
+/// convention `start-ide-stack.ps1`'s own `-MooUser`/`-MooPassword` handling
+/// already uses (`connect "$MooUser" $MooPassword`) - required for a
+/// multi-word account name, a no-op for a single-word one like `wizard`.
+/// Confirmed live against a real HellMOO-derived world that a passwordless
+/// wizard-equivalent character's own name (not literally "wizard") works
+/// fine here; a world requiring a real, non-blank password needs `password`
+/// actually supplied by the caller now (previously out of scope entirely).
+let connect (host: string) (port: int) (username: string) (password: string) (ct: CancellationToken) : Task<Connection> =
     task {
         let client = new TcpClient()
         do! client.ConnectAsync(host, port, ct)
         let stream = client.GetStream()
-        let login = Encoding.UTF8.GetBytes("connect " + username + "\r\n")
+
+        let loginLine =
+            if password = "" then
+                sprintf "connect \"%s\"" username
+            else
+                sprintf "connect \"%s\" %s" username password
+
+        let login = Encoding.UTF8.GetBytes(loginLine + "\r\n")
         do! stream.WriteAsync(login, 0, login.Length, ct)
 
         return
