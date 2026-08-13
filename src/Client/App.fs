@@ -4237,7 +4237,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     ownerWidget.classList.add "inspector-owner-widget"
 
     let ownerEditGroup, addOwnerInput =
-        mkQuickFillInput "player, #5, or $room" "player" ownerQuickFills false
+        mkQuickFillInput "player, #5, or $room" (sprintf "#%d" objRef) ownerQuickFills false
 
     // The object's own current owner - reuses `ownerVal`, already fetched
     // above for the header's "Owner:" row - as both the auto-label's text
@@ -4648,7 +4648,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     // Same shared widget the property-owner picker uses above - literally
     // the same component, per the review note asking for consistency.
     let addVerbOwnerGroup, addVerbOwnerInput =
-        mkQuickFillInput "player, #5, or $room" "player" ownerQuickFills false
+        mkQuickFillInput "player, #5, or $room" (sprintf "#%d" objRef) ownerQuickFills false
 
     // Verbs only ever have four permission bits - r/w/x/d (Read/Write/Exec/
     // Debug) - confirmed against `ToastStunt/src/verbs.cc`'s
