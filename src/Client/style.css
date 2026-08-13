@@ -633,13 +633,14 @@ html, body {
 
 #main-tabs.visible {
   display: flex;
+  align-items: flex-end;
 }
 
 #verb-tabs {
   display: flex;
   gap: 2px;
   min-width: 0;
-  overflow-x: auto;
+  flex-wrap: wrap;
 }
 
 .main-tab {
