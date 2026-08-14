@@ -51,6 +51,7 @@ let private commandPaletteInputEl = document.getElementById ("command-palette-in
 let private commandPaletteListEl = document.getElementById ("command-palette-list")
 
 let private connectionStatusEl = document.getElementById ("connection-status")
+let private refreshDocsBtn = document.getElementById ("refresh-docs-btn")
 let private reconnectExhaustedOverlayEl = document.getElementById ("reconnect-exhausted-overlay")
 let private reconnectRetryBtn = document.getElementById ("reconnect-retry-btn")
 let private settingsBtn = document.getElementById ("settings-btn")
@@ -603,6 +604,34 @@ module private Settings =
 
 settingsBtn.onclick <- fun _ -> Settings.show ()
 settingsCloseBtn.onclick <- fun _ -> Settings.hide ()
+
+let private refreshDocsDefaultTitle = "Refresh builtins, $-name resolution, and verb docs from the language server"
+
+// Combined refresh for everything the LanguageServer caches for its own
+// lifetime and never invalidates on its own: the live builtins cache
+// (SidecarBridge.cachedBuiltins) and the static object/verb/property graph
+// (GraphStore, same moodev/reloadGraph the Connection panel's "Switch &
+// Reload" already uses - reused here standalone, against the currently
+// configured tree dir, with no page reload since the target isn't
+// changing). Always visible regardless of which view/tab is active -
+// staleness can show up in the tree, an editor hover, the docs panel, or
+// the eval scratchpad alike, not just the verb code editor.
+refreshDocsBtn.onclick <-
+    fun _ ->
+        async {
+            refreshDocsBtn.setAttribute ("title", "Refreshing...")
+
+            try
+                do! LspClient.clearBuiltinsCacheAsync ()
+                do! LspClient.reloadGraphAsync (settingMooTreeDirEl.value.Trim())
+                refreshDocsBtn.setAttribute ("title", "Refreshed")
+            with ex ->
+                refreshDocsBtn.setAttribute ("title", sprintf "Failed: %s" ex.Message)
+
+            do! Async.Sleep 2000
+            refreshDocsBtn.setAttribute ("title", refreshDocsDefaultTitle)
+        }
+        |> Async.StartImmediate
 staleTabWarningDismissBtn.onclick <- fun _ -> staleTabWarningEl.classList.add "hidden"
 // Backdrop click closes the overlay; the panel stops its own clicks from
 // bubbling to the backdrop, same "stop propagation so an inner click

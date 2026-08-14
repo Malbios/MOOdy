@@ -2752,6 +2752,16 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
             return Ok()
         }
 
+    /// Custom method (`moodev/clearBuiltinsCache`, no params) - clears
+    /// SidecarBridge's live builtins cache so the next hover/docs lookup
+    /// re-fetches instead of returning a process-lifetime-stale value. See
+    /// [[Combined refresh for LSP builtins and static graph]].
+    member _.ClearBuiltinsCache(_p: obj) : Async<Result<unit, JsonRpc.Error>> =
+        async {
+            bridge.ClearBuiltinsCache()
+            return Ok()
+        }
+
     /// Custom method (`moodev/resolveEffectiveMember`, `{objRef, kind,
     /// name}`) - the permission-inheritance visualizer's own lookup: which
     /// ancestor's copy of this verb/property actually wins by real MOO

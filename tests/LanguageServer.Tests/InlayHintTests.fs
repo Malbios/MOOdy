@@ -89,7 +89,8 @@ let private graph = lazy (Metadata.Loader.load fixtureDir)
 
 let private fakeBridge: SidecarBridge =
     { ResolveVerbDispatch = fun _ _ -> task { return None }
-      GetBuiltins = fun () -> task { return Some Map.empty } }
+      GetBuiltins = fun () -> task { return Some Map.empty }
+      ClearBuiltinsCache = ignore }
 
 let private server = lazy (new MooLspServer(new MooLspClient(), graph.Value, fakeBridge))
 

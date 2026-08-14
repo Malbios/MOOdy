@@ -52,7 +52,8 @@ let private graphOf (objects: ObjectNode list) : Graph =
 
 let private neverCalledBridge: SidecarBridge =
     { ResolveVerbDispatch = fun _ _ -> Task.FromException<VerbDispatchResult option>(exn "should not be called")
-      GetBuiltins = fun () -> Task.FromException<Map<string, BuiltinFunc> option>(exn "should not be called") }
+      GetBuiltins = fun () -> Task.FromException<Map<string, BuiltinFunc> option>(exn "should not be called")
+      ClearBuiltinsCache = fun () -> failwith "should not be called" }
 
 let private serverFor (graph: Graph) : MooLspServer =
     new MooLspServer(new MooLspClient(), graph, neverCalledBridge)

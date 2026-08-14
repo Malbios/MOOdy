@@ -336,6 +336,13 @@ let getCallGraphAsync (objRef: int64) (verbName: string) : Async<(int64 * string
 let reloadGraphAsync (surviveRoot: string) : Async<unit> =
     async { do! requestAsync "moodev/reloadGraph" (createObj [ "surviveRoot" ==> surviveRoot ]) |> Async.Ignore }
 
+/// Custom method (`moodev/clearBuiltinsCache`, no params) - clears the
+/// language server's cached builtins so the next hover/docs lookup
+/// re-fetches live instead of returning a stale, process-lifetime value
+/// (matches `Handlers.MooLspServer.ClearBuiltinsCache`).
+let clearBuiltinsCacheAsync () : Async<unit> =
+    async { do! requestAsync "moodev/clearBuiltinsCache" (createObj []) |> Async.Ignore }
+
 /// One confirmed call site from `moodev/prepareRename` - everything the
 /// `"rename-verb"` Sidecar action needs to splice the new name in, without
 /// the client re-resolving anything itself.

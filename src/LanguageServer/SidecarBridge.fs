@@ -71,7 +71,11 @@ type SidecarBridge =
       /// hover) must keep the two apart; callers that just want best-effort
       /// data (semantic tokens, completion, docs) can collapse `None` to
       /// `Map.empty` same as before.
-      GetBuiltins: unit -> Task<Map<string, BuiltinFunc> option> }
+      GetBuiltins: unit -> Task<Map<string, BuiltinFunc> option>
+      /// Clears the live builtins cache below so the next `GetBuiltins()`
+      /// call re-fetches instead of returning a stale, process-lifetime
+      /// value - see [[Combined refresh for LSP builtins and static graph]].
+      ClearBuiltinsCache: unit -> unit }
 
 let private bufferSize = 8192
 
@@ -247,10 +251,14 @@ let create (wsUrl: string) : SidecarBridge =
                     return None
         }
 
-    // Builtins never change during a session (fixed by the server binary,
-    // per `Exporter.getBuiltinFunctions`'s own doc comment) - fetched once
-    // lazily on first request and cached forever after, not re-fetched per
-    // hover/signature-help call.
+    // Builtins are fixed by the server binary and don't change mid-session
+    // on their own, so this is fetched once lazily on first request and
+    // cached thereafter rather than re-fetched per hover/signature-help
+    // call - but the binary itself CAN change underneath a long-running
+    // LanguageServer process (a ToastStunt rebuild picking up a new/changed
+    // builtin without a matching LanguageServer restart), so `clearBuiltinsCache`
+    // below gives the client a way to force a re-fetch without restarting
+    // this process - see [[Combined refresh for LSP builtins and static graph]].
     let mutable cachedBuiltins: Map<string, BuiltinFunc> option = None
     let builtinsLock = new SemaphoreSlim(1, 1)
 
@@ -287,5 +295,14 @@ let create (wsUrl: string) : SidecarBridge =
                     builtinsLock.Release() |> ignore
         }
 
+    let clearBuiltinsCache () : unit =
+        builtinsLock.Wait()
+
+        try
+            cachedBuiltins <- None
+        finally
+            builtinsLock.Release() |> ignore
+
     { ResolveVerbDispatch = resolveVerbDispatch
-      GetBuiltins = getBuiltins }
+      GetBuiltins = getBuiltins
+      ClearBuiltinsCache = clearBuiltinsCache }

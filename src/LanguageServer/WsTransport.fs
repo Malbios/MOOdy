@@ -33,6 +33,7 @@ let run (socket: WebSocket) (graph: Graph) (bridge: SidecarBridge.SidecarBridge)
         |> Map.add "moodev/findPermissionRisks" (Server.serverRequestHandling (fun (s: MooLspServer) (p: obj) -> s.FindPermissionRisks p))
         |> Map.add "moodev/getMoocodeDocs" (Server.serverRequestHandling (fun (s: MooLspServer) (p: obj) -> s.GetMoocodeDocs p))
         |> Map.add "moodev/reloadGraph" (Server.serverRequestHandling (fun (s: MooLspServer) (p: ReloadGraphParams) -> s.ReloadGraph p))
+        |> Map.add "moodev/clearBuiltinsCache" (Server.serverRequestHandling (fun (s: MooLspServer) (p: obj) -> s.ClearBuiltinsCache p))
         |> Map.add
             "moodev/resolveEffectiveMember"
             (Server.serverRequestHandling (fun (s: MooLspServer) (p: ResolveEffectiveMemberParams) -> s.ResolveEffectiveMember p))

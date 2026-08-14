@@ -35,11 +35,39 @@ html, body {
   border-color: #6cf;
 }
 
-.connection-status {
+/* Wraps #refresh-docs-btn + .connection-status so their combined width
+   resolves via flex layout instead of a hardcoded `right` offset on each -
+   .connection-status's own text is variable-length ("reconnecting (attempt
+   99)..." is the documented worst case), so a fixed offset for a sibling
+   button would risk overlapping it. #settings-btn stays independently
+   fixed-positioned, untouched. */
+#top-bar-actions {
   position: fixed;
   top: 8px;
   right: 44px;
   z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#refresh-docs-btn {
+  background: #1a1a1a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.3em 0.5em;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+#refresh-docs-btn:hover {
+  border-color: #6cf;
+}
+
+.connection-status {
   padding: 0.3em 0.6em;
   border-radius: 4px;
   font-size: 0.85em;
@@ -74,14 +102,16 @@ html, body {
   justify-content: space-between;
   gap: 0.5em;
   padding: 0.4em 0.8em;
-  /* `#settings-btn`/`.connection-status` are `position: fixed` over the
-     page's top-right corner, independent of `#layout` - without this, the
-     banner's own right-aligned dismiss button renders directly underneath
-     them (confirmed live: unclickable, the fixed settings button always
-     wins the hit test). Generous enough to clear `.connection-status`'s
-     widest realistic text ("reconnecting (attempt 99)...") plus the gear
-     button beside it. */
-  padding-right: 260px;
+  /* `#settings-btn`/`#top-bar-actions` (which now also holds
+     `#refresh-docs-btn` alongside `.connection-status`) are `position:
+     fixed` over the page's top-right corner, independent of `#layout` -
+     without this, the banner's own right-aligned dismiss button renders
+     directly underneath them (confirmed live: unclickable, the fixed
+     settings button always wins the hit test). Generous enough to clear
+     `.connection-status`'s widest realistic text ("reconnecting (attempt
+     99)..."), the new refresh icon button beside it, and the gear button
+     beyond that. */
+  padding-right: 300px;
   background: #4a3a1a;
   color: #e2a03f;
   border-bottom: 1px solid #6a5a2a;
