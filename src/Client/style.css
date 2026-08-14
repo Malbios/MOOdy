@@ -1202,6 +1202,92 @@ html, body {
   font-weight: normal;
 }
 
+/* Explicit per-column widths for the Properties table - otherwise-auto
+   column sizing left Owner far wider than its content (an objref or a
+   short "You (Wizard (#N))"/"This object" button pair) ever needs, while
+   Value - almost always the more interesting cell - got squeezed. Baseline
+   split (Name 20 / Owner 28 / Perms 8 / Value 39 / action 5, summing to
+   100) with a quarter of Owner's own share (28 * 0.25 = 7) moved onto
+   Value (39 + 7 = 46), leaving Owner at 21. `table-layout: fixed` is
+   required for percentage `<col>`-less widths on `td`/`th` to actually
+   stick - scoped to this table's own class, not `.inspector-table`
+   generally, since the unrelated verb-metrics table also uses that class
+   with a completely different column set. */
+.inspector-props-table {
+  table-layout: fixed;
+}
+
+.inspector-props-table th:nth-child(1),
+.inspector-props-table td:nth-child(1) {
+  width: 20%;
+}
+
+.inspector-props-table th:nth-child(2),
+.inspector-props-table td:nth-child(2) {
+  width: 21%;
+}
+
+.inspector-props-table th:nth-child(3),
+.inspector-props-table td:nth-child(3) {
+  width: 8%;
+}
+
+.inspector-props-table th:nth-child(4),
+.inspector-props-table td:nth-child(4) {
+  width: 46%;
+}
+
+.inspector-props-table th:nth-child(5),
+.inspector-props-table td:nth-child(5) {
+  width: 5%;
+}
+
+/* Same idea for the Verbs table: Prep is the "so far almost unused" column
+   - most verbs are the "this"/"none"/"this" ("TNT") convention, so Prep
+   reads as "none" in nearly every row, while Name (plus the "(overrides
+   #N)" annotation it can carry) is what actually matters for scanning the
+   list. Baseline (Name 22 / Owner 18 / Perms 8 / Dobj 14 / Prep 12 / Iobj
+   14 / action 12, summing to 100) with a quarter of Prep's own share
+   (12 * 0.25 = 3) moved onto Name (22 + 3 = 25), leaving Prep at 9. */
+.inspector-verbs-table {
+  table-layout: fixed;
+}
+
+.inspector-verbs-table th:nth-child(1),
+.inspector-verbs-table td:nth-child(1) {
+  width: 25%;
+}
+
+.inspector-verbs-table th:nth-child(2),
+.inspector-verbs-table td:nth-child(2) {
+  width: 18%;
+}
+
+.inspector-verbs-table th:nth-child(3),
+.inspector-verbs-table td:nth-child(3) {
+  width: 8%;
+}
+
+.inspector-verbs-table th:nth-child(4),
+.inspector-verbs-table td:nth-child(4) {
+  width: 14%;
+}
+
+.inspector-verbs-table th:nth-child(5),
+.inspector-verbs-table td:nth-child(5) {
+  width: 9%;
+}
+
+.inspector-verbs-table th:nth-child(6),
+.inspector-verbs-table td:nth-child(6) {
+  width: 14%;
+}
+
+.inspector-verbs-table th:nth-child(7),
+.inspector-verbs-table td:nth-child(7) {
+  width: 12%;
+}
+
 .inspector-verb-row {
   cursor: pointer;
 }
@@ -1477,15 +1563,23 @@ html, body {
   width: 100%;
 }
 
+/* `flex-wrap` + a real `min-width` floor on the input (rather than the
+   `min-width: 0` this used to have) so the quick-fill buttons drop to a
+   second line instead of overflowing the cell once a table column gets
+   narrow (confirmed live: the fixed-width Properties/Verbs Owner columns
+   below made this overflow into the neighboring cell without it - with
+   `min-width: 0` the input just shrinks to nothing instead of ever
+   triggering a wrap, since nothing is left to force one). */
 .inspector-owner-edit-group {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.3em;
   width: 100%;
 }
 
 .inspector-owner-edit-group input {
   flex: 1;
-  min-width: 0;
+  min-width: 6em;
 }
 
 /* A bare `display:flex` span is still block-level and fills its container -

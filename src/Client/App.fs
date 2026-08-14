@@ -3938,6 +3938,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
     let propsTable = document.createElement ("table")
     propsTable.classList.add "inspector-table"
+    propsTable.classList.add "inspector-props-table"
     let propsHeaderRow = document.createElement ("tr")
 
     for h in [ "Name"; "Owner"; "Perms"; "Value"; "" ] do
@@ -4448,6 +4449,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
     let verbsTable = document.createElement ("table")
     verbsTable.classList.add "inspector-table"
+    verbsTable.classList.add "inspector-verbs-table"
     let verbsHeaderRow = document.createElement ("tr")
 
     for h in [ "Name"; "Owner"; "Perms"; "Dobj"; "Prep"; "Iobj"; "" ] do
