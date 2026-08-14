@@ -131,7 +131,7 @@ let private moocodeLanguage: obj =
                         '@keywords': 'keyword',
                         '@errorLiterals': 'constant.error',
                         '@builtinVariables': 'variable.predefined',
-                        '@default': 'identifier'
+                        '@default': 'variable'
                     }
                 }],
                 [/#-?\d+/, 'annotation'],
@@ -181,22 +181,51 @@ let private moocodeLanguageConfiguration: obj =
         }
     })"""
 
-/// A "vs-dark" variant adding one rule: MOO error-code constants
-/// (`constant.error`, the Monarch grammar's `E_[A-Z]+` token above) get
-/// their own bold purple instead of inheriting `constant`'s blue
-/// (`#569CD6`) - which vs-dark's own `keyword` rule already uses too, so
-/// plain `E_INVARG`/`E_PERM`/etc. were indistinguishable from control
-/// keywords like `if`/`while`. `C586C0` isn't a new color - it's vs-dark's
-/// own existing purple (`keyword.flow`, confirmed directly in the installed
-/// package's own theme table,
-/// `node_modules/monaco-editor/esm/vs/editor/standalone/common/themes.js`),
-/// just unused by this grammar until now (it only ever emits plain
-/// `'keyword'`, never `'keyword.flow'`).
+/// A "vs-dark" variant adding the rules Monaco's own live semantic-token
+/// pass needs that vs-dark doesn't define - `inherit: true` only pulls in
+/// vs-dark's *literal* token-name rules, and this project's semantic-token
+/// modifiers (`defaultLibrary`/`unresolved`, `Handlers.classifySemanticToken`)
+/// aren't real VS Code scope names, so vs-dark has nothing for them; without
+/// an explicit rule here they silently fall back to their base type's color
+/// with zero visible effect from the modifier.
+///
+/// - `constant.error` (the Monarch grammar's closed-set error-literal
+///   token) gets its own bold purple instead of inheriting `constant`'s
+///   blue (`#569CD6`) - which vs-dark's own `keyword` rule already uses
+///   too, so plain `E_INVARG`/`E_PERM`/etc. were indistinguishable from
+///   control keywords like `if`/`while`. `C586C0` isn't a new color - it's
+///   vs-dark's own existing purple (`keyword.flow`, confirmed directly in
+///   the installed package's own theme table,
+///   `node_modules/monaco-editor/esm/vs/editor/standalone/common/themes.js`),
+///   just unused by this grammar otherwise.
+/// - `variable` (both the Monarch grammar's own `@default` token *and* the
+///   live semantic pass's un-modified token for an ordinary local variable)
+///   gets vs-dark's `variable.parameter`/`attribute.name` cyan (`9CDCFE`)
+///   instead of inheriting vs-dark's own `variable` rule (`74B0DF`, a
+///   *lighter* blue) - confirmed live that `74B0DF` sits close enough to
+///   `keyword`'s `569CD6` to read as "basically the same blue" at a glance,
+///   which was the actual live complaint this fixes. `9CDCFE` reuses an
+///   existing vs-dark hue this grammar doesn't otherwise touch, and is the
+///   same shade VS Code's own built-in TypeScript semantic highlighting
+///   uses for a local/parameter binding, so it should already read as
+///   familiar.
+/// - `variable.defaultLibrary` gives the *live* pass's version of "this/
+///   player/OBJ/true/..." (`Handlers.classifySemanticToken`'s
+///   `defaultLibrary` modifier) the same indigo (`4864AA`) the *static*
+///   Monarch grammar's `variable.predefined` token already gets for free
+///   from vs-dark - without this rule, the live pass (which runs after the
+///   static pass and wins when both apply) was silently repainting those
+///   same names back to plain `variable`, undoing the distinction the
+///   Monarch grammar alone can't make stick once semantic highlighting
+///   takes over.
 let private moocodeTheme: obj =
     createObj
         [ "base" ==> "vs-dark"
           "inherit" ==> true
-          "rules" ==> [| createObj [ "token" ==> "constant.error"; "foreground" ==> "C586C0"; "fontStyle" ==> "bold" ] |]
+          "rules" ==>
+            [| createObj [ "token" ==> "constant.error"; "foreground" ==> "C586C0"; "fontStyle" ==> "bold" ]
+               createObj [ "token" ==> "variable"; "foreground" ==> "9CDCFE" ]
+               createObj [ "token" ==> "variable.defaultLibrary"; "foreground" ==> "4864AA" ] |]
           "colors" ==> createObj [] ]
 
 /// Registers the "moocode" language and its theme with Monaco. Call once,

@@ -985,8 +985,21 @@ let classifySemanticToken
               TokenType = tokenType
               TokenModifiers = modifiers }
 
+    // `this`/`player`/etc *and* the type-tag constants *and* `true`/`false`
+    // are all the same "pre-bound local variable" mechanism server-side
+    // (`sym_table.cc` - see `typeConstantHelp`'s own doc comment), so all
+    // three get the `defaultLibrary` modifier here, not just the 12
+    // `implicitVariableHelp` names - matches `Monaco.fs`'s Monarch grammar,
+    // which groups the same three sets into one `builtinVariables` list for
+    // the identical reason. Before this, OBJ/true/false fell into plain
+    // unmodified `variable` here, indistinguishable from an ordinary local
+    // - the live semantic-token pass (which runs after Monarch's static
+    // pass and wins when both apply) was quietly undoing that half of the
+    // distinction even though the static grammar had it right.
     match r.Ref with
-    | AstQuery.RefIdent name -> entry "variable" (if (implicitVariableHelp name).IsSome then [| "defaultLibrary" |] else [||])
+    | AstQuery.RefIdent name ->
+        let isPreBound = (implicitVariableHelp name).IsSome || (typeConstantHelp name).IsSome || name = "true" || name = "false"
+        entry "variable" (if isPreBound then [| "defaultLibrary" |] else [||])
     | AstQuery.RefCall(name, _) -> entry "function" (if Map.containsKey name liveBuiltins then [| "defaultLibrary" |] else [||])
     | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
         match Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver with

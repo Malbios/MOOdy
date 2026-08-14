@@ -47,6 +47,18 @@ let ``an implicit verb-call variable classifies as variable with the defaultLibr
     Assert.Equal(Some "variable", entry |> Option.map (fun e -> e.TokenType))
 
 [<Fact>]
+let ``a type-tag constant classifies as variable with the defaultLibrary modifier`` () =
+    let entry = classify [] [] (refAt 1 1 3 (RefIdent "OBJ"))
+    Assert.Equal(Some [| "defaultLibrary" |], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
+let ``true/false classify as variable with the defaultLibrary modifier`` () =
+    let trueEntry = classify [] [] (refAt 1 1 4 (RefIdent "true"))
+    let falseEntry = classify [] [] (refAt 1 1 5 (RefIdent "false"))
+    Assert.Equal(Some [| "defaultLibrary" |], trueEntry |> Option.map (fun e -> e.TokenModifiers))
+    Assert.Equal(Some [| "defaultLibrary" |], falseEntry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
 let ``a call to a known builtin classifies as function with the defaultLibrary modifier`` () =
     let entry = classify [ "notify", fn "notify" ] [] (refAt 1 1 6 (RefCall("notify", [])))
     Assert.Equal(Some "function", entry |> Option.map (fun e -> e.TokenType))
