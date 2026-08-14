@@ -1262,35 +1262,26 @@ html, body {
   font-style: normal;
 }
 
-/* Verb name coloring: dobj/prep/iobj exactly "this"/"none"/"this" ("TNT")
-   is the conventional triple for a verb meant to be called only
+/* Verb name weight: dobj/prep/iobj exactly "this"/"none"/"this" ("TNT") is
+   the conventional triple for a verb meant to be called only
    programmatically (`object:verb(...)`) - never matched against a player's
    typed command - vs. any other triple, which IS directly command-
-   invokable. Scoped to the name column only (`td:first-child` - the Name
-   column is always first) so Owner/Perms/Dobj/Prep/Iobj stay unaffected.
-   The base rule colors the always-visible label text (a plain text node
-   for an inherited row, `mkEditableCell`'s own un-classed label span for
-   an own row) via ordinary inheritance; the two rules below it restore the
-   "#N"/"(overrides #N)" link colors an inherited/overridden row's name
-   cell can also contain (own-element color declarations don't inherit, but
-   this selector is still more specific than their own `.inspector-link`/
-   `.inspector-shadowed-suffix` rules, so it would otherwise win); the last
-   rule does the same for the input shown while editing an own verb's name
-   (`.inspector-property-value` sets its own explicit color too). */
+   invokable. Bold rather than colored so this stays orthogonal to the
+   existing gray/italic ".inspector-row-inherited" styling - an inherited,
+   un-overridden verb should still read as gray (not overridden), with TNT-
+   ness layered on as weight, not a competing color. Scoped to the name
+   column only (`td:first-child` - the Name column is always first) so
+   Owner/Perms/Dobj/Prep/Iobj stay unaffected; the second rule keeps the
+   "#N"/"(overrides #N)" link spans at their normal weight (unlike color,
+   font-weight isn't set on `.inspector-property-value`/those link spans
+   themselves, so this is the only override needed - the editing-mode input
+   just inherits the bold like any other un-styled descendant). */
 .inspector-table tr.inspector-verb-tnt-row td:first-child {
-  color: #7a90b0;
+  font-weight: bold;
 }
 
 .inspector-table tr.inspector-verb-tnt-row td:first-child .inspector-link {
-  color: #6cf;
-}
-
-.inspector-table tr.inspector-verb-tnt-row td:first-child .inspector-shadowed-suffix {
-  color: #c85;
-}
-
-.inspector-table tr.inspector-verb-tnt-row td:first-child .inspector-property-value {
-  color: #7a90b0;
+  font-weight: normal;
 }
 
 .inspector-override-btn {
