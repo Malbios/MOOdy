@@ -218,6 +218,31 @@ let private moocodeLanguageConfiguration: obj =
 ///   same names back to plain `variable`, undoing the distinction the
 ///   Monarch grammar alone can't make stick once semantic highlighting
 ///   takes over.
+/// - `method` and `function` (`classifySemanticToken`'s tokens for
+///   `obj:verb(...)` calls and bare `name(...)` calls respectively) had the
+///   exact same problem, total invisibility rather than a deliberate
+///   "leave calls uncolored" choice - vs-dark defines no rule for either
+///   scope at all, so both silently fell back to plain body-text color no
+///   matter what modifier they carried. `DCDCAA` is VS Code's own
+///   long-standing default color for a function/method call (`dark_vs.json`
+///   in any VS Code install, `entity.name.function`), immediately familiar
+///   and shared between the two so both read as "this calls something" -
+///   deliberately not splitting them into two different hues, since the
+///   real distinction that matters is resolved-vs-not, handled below.
+/// - `method.unresolved` (a verb call whose dispatch target couldn't be
+///   statically confirmed - a computed receiver, a name not found by
+///   walking the graph, ...) reuses that same yellow but italic, the same
+///   "less certain" visual idiom `style.css`'s `.inspector-row-inherited`
+///   already uses elsewhere in this app, rather than a different color -
+///   it's still definitely a verb call, just one this tooling can't fully
+///   vouch for. Deliberately not doing the equivalent for `function`
+///   without the `defaultLibrary` modifier (an unrecognized bare-name
+///   call) - unlike an unresolved verb dispatch, that can just as easily
+///   mean the live builtins cache is stale (see [[Combined refresh for LSP
+///   builtins and static graph]]) as it can mean a real compile error, and
+///   the real compile-time check (`set_verb_code`'s own error list) is
+///   already authoritative for that - a heuristic red/warning color here
+///   would just be a second, less trustworthy signal for the same thing.
 let private moocodeTheme: obj =
     createObj
         [ "base" ==> "vs-dark"
@@ -225,7 +250,10 @@ let private moocodeTheme: obj =
           "rules" ==>
             [| createObj [ "token" ==> "constant.error"; "foreground" ==> "C586C0"; "fontStyle" ==> "bold" ]
                createObj [ "token" ==> "variable"; "foreground" ==> "9CDCFE" ]
-               createObj [ "token" ==> "variable.defaultLibrary"; "foreground" ==> "4864AA" ] |]
+               createObj [ "token" ==> "variable.defaultLibrary"; "foreground" ==> "4864AA" ]
+               createObj [ "token" ==> "function"; "foreground" ==> "DCDCAA" ]
+               createObj [ "token" ==> "method"; "foreground" ==> "DCDCAA" ]
+               createObj [ "token" ==> "method.unresolved"; "foreground" ==> "DCDCAA"; "fontStyle" ==> "italic" ] |]
           "colors" ==> createObj [] ]
 
 /// Registers the "moocode" language and its theme with Monaco. Call once,
