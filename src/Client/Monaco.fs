@@ -39,6 +39,65 @@ let private monaco: obj = importAll "monaco-editor"
 /// claimed MOOcode has no comment syntax at all - that was wrong, corrected
 /// this session after reading the parser source directly. There is no `//`
 /// line-comment form; a bare `/` not followed by `*` is just division.
+///
+/// `keywords`/`errorLiterals` are the exact two closed sets
+/// `Language.Lexer.fs` uses (its own doc comments cite `keywords.gperf`/
+/// `parser.y` directly) - kept as separate hand-copied JS arrays rather than
+/// shared with that file, same "client keeps its own copy, hardcoded to
+/// match" tradeoff `LspClient.fs`'s `semanticTokenTypes` already makes for
+/// the same reason (no F#-to-JS-data-literal sharing path exists here).
+/// Two corrections against the previous version of this list, both found by
+/// re-reading `Lexer.fs`'s own doc comment rather than assumed: `endfinally`
+/// isn't real syntax (a `try`/`finally` still closes with plain `endtry`),
+/// and `pass` is a registered builtin, not a keyword - `execute.cc:3817`,
+/// same source `Lexer.fs`'s own comment cites. `ANY` (the `except e (ANY)`
+/// catch-all) was missing entirely; it's a real, case-sensitive keyword.
+/// `errorLiterals` replaces the previous open `/\bE_[A-Z]+\b/` regex, which
+/// colored *any* `E_something` spelling as if it were a real error code -
+/// the actual set is closed at 19 names (`keywords.gperf`); anything else is
+/// just an identifier and raises `E_VARNF` at runtime, so highlighting it as
+/// a valid constant was actively misleading.
+///
+/// `builtinVariables` now also covers `true`/`false` and the 11 type-tag
+/// constants (`NUM`/`OBJ`/etc.) - confirmed in `sym_table.cc:118-122` (bools)
+/// and `sym_table.cc:88-121` (type tags) to be pre-bound entries in the
+/// *local variable table*, the exact same mechanism as `this`/`player`/
+/// `caller`, not real constants - they're just as shadowable/reassignable.
+/// Previously `true`/`false` had their own `constants` category, which
+/// rendered identically to `keyword` in vs-dark (`#569CD6` for both) - so
+/// `true` already looked exactly like `if`/`while`, backwards from what a
+/// pre-bound *variable* should look like. Folding them into
+/// `builtinVariables` fixes that collision for free (vs-dark already gives
+/// that token its own indigo, `#4864AA`) without adding a new theme rule,
+/// and correctly groups OBJ/STR/etc. with `this`/`player` instead of
+/// implying an immutability none of them have.
+///
+/// The old identifier regex's character class included `$`, which meant
+/// `$foo` (corponym references, extremely common) always matched *that*
+/// rule first (it comes before the dedicated `\$[\w]+` "annotation" rule
+/// below) and rendered as a plain identifier - the annotation rule was
+/// unreachable dead code. `Language.Lexer.fs`'s own `isIdentStart` confirms
+/// `$` was never a real identifier character to begin with
+/// (letters/underscore only), so excluding it here is a straight bug fix,
+/// not a behavior change for any real MOOcode.
+///
+/// The operator regex previously had no entry at all for bare `$`/`^` (the
+/// parser-context-sensitive index-position tokens, `list[$]`/`list[^]`),
+/// `@` (splice, `{@a, @b}`/`f(@args)`), `~` (bitwise complement), or `^` as
+/// the exponent operator / first half of `^.` (bitwise xor) - all four fell
+/// through as unstyled plain text. Added to the same character class as the
+/// other single-char operators.
+///
+/// Backtick/single-quote (the catch-expression's own asymmetric open/close
+/// pair, `` `expr ! codes => fallback' ``) got no styling at all before -
+/// confirmed as real, dedicated tokens (`TBacktick`/`TSingleQuote`) in
+/// `Language.Lexer.fs`, not string-literal punctuation, and used nowhere
+/// else in MOOcode's grammar (no character literals, no other single-quote
+/// syntax), so unconditionally coloring a bare `` ` `` or `'` is safe. Given
+/// `keyword.flow`'s purple already means "error-handling machinery" here
+/// (it's what `constant.error` below reuses for `E_*` codes), reusing it for
+/// the inline catch-expression's own delimiters keeps that association
+/// consistent rather than introducing a third, unrelated color.
 let private moocodeLanguage: obj =
     emitJsExpr
         ()
@@ -49,22 +108,29 @@ let private moocodeLanguage: obj =
             'for', 'in', 'endfor',
             'while', 'endwhile',
             'fork', 'endfork',
-            'try', 'except', 'endtry', 'finally', 'endfinally',
-            'return', 'break', 'continue', 'pass'
+            'try', 'except', 'endtry', 'finally',
+            'return', 'break', 'continue', 'ANY'
+        ],
+        errorLiterals: [
+            'E_NONE', 'E_TYPE', 'E_DIV', 'E_PERM', 'E_PROPNF', 'E_VERBNF',
+            'E_VARNF', 'E_INVIND', 'E_RECMOVE', 'E_MAXREC', 'E_RANGE',
+            'E_ARGS', 'E_NACC', 'E_INVARG', 'E_QUOTA', 'E_FLOAT', 'E_FILE',
+            'E_EXEC', 'E_INTRPT'
         ],
         builtinVariables: [
             'this', 'caller', 'player', 'verb', 'args', 'argstr',
-            'dobj', 'dobjstr', 'prep', 'prepstr', 'iobj', 'iobjstr'
+            'dobj', 'dobjstr', 'prep', 'prepstr', 'iobj', 'iobjstr',
+            'true', 'false',
+            'NUM', 'OBJ', 'STR', 'LIST', 'ERR', 'INT', 'FLOAT', 'MAP',
+            'ANON', 'WAIF', 'BOOL'
         ],
-        constants: ['true', 'false'],
         tokenizer: {
             root: [
-                [/\bE_[A-Z]+\b/, 'constant.error'],
-                [/[a-zA-Z_$][\w$]*/, {
+                [/[a-zA-Z_][\w]*/, {
                     cases: {
                         '@keywords': 'keyword',
+                        '@errorLiterals': 'constant.error',
                         '@builtinVariables': 'variable.predefined',
-                        '@constants': 'constant',
                         '@default': 'identifier'
                     }
                 }],
@@ -73,9 +139,10 @@ let private moocodeLanguage: obj =
                 [/\d+\.\d+([eE][-+]?\d+)?/, 'number.float'],
                 [/\d+/, 'number'],
                 [/"([^"\\]|\\.)*"/, 'string'],
+                [/[`']/, 'keyword.flow'],
                 [/\/\*/, 'comment', '@comment'],
                 [/[{}()\[\]]/, '@brackets'],
-                [/[<>=!]=|[-+*\/%<>!&|]=?|=>|\?|:|;|,|\.\.|\./, 'operator'],
+                [/[<>=!]=|[-+*\/%<>!&|@~^$]=?|=>|\?|:|;|,|\.\.|\./, 'operator'],
                 [/\s+/, 'white']
             ],
             comment: [
