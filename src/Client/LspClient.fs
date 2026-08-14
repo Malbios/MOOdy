@@ -613,6 +613,13 @@ let private toUint32Array (xs: uint32[]) : obj = emitJsExpr xs "new Uint32Array(
 ///   remapping needed either way). Every position conversion treats `None`
 ///   as "no line remap", same identity-preserving contract `getIndentDelta`
 ///   already has.
+///
+/// Returns a `refreshSemanticTokens` trigger - fires
+/// `semanticTokensChangedEmitter` so Monaco re-requests semantic tokens for
+/// the current model on demand, not just on the next content edit. The
+/// top-bar Refresh action (`App.fs`) calls this after a builtins-cache
+/// clear/graph reload, since those can change `defaultLibrary`/`unresolved`
+/// classifications without editing the verb's own text.
 let wire
     (monaco: obj)
     (getCurrentDocument: unit -> (int64 * string) option)
@@ -620,7 +627,7 @@ let wire
     (showCaveat: string -> unit)
     (getIndentDelta: int64 -> string -> int[] option)
     (getLineMap: int64 -> string -> Sugar.LineMap option)
-    : unit =
+    : (unit -> unit) =
     // Monaco can invoke a provider again before an earlier call's websocket
     // round-trip has come back - moving the mouse across a word re-fires
     // hover, typing re-fires completion/signature-help, each an independent
@@ -638,6 +645,18 @@ let wire
     let mutable signatureHelpGen = 0
     let mutable documentHighlightGen = 0
     let mutable semanticTokensGen = 0
+
+    /// Fires to tell Monaco to re-request semantic tokens for the current
+    /// model without waiting for a content edit - Monaco only ever calls
+    /// `provideDocumentSemanticTokens` again on its own when the model's
+    /// text changes or a `DocumentSemanticTokensProvider.onDidChange` event
+    /// fires (confirmed in the installed package's own `editor.api.d.ts`),
+    /// so `defaultLibrary`/`unresolved` classifications going stale after a
+    /// live server-side change (a builtins-cache clear, a graph reload) -
+    /// with no edit to the verb's own text - would otherwise only ever
+    /// clear on the next keystroke or a full page reload. The top-bar
+    /// Refresh action (`App.fs`) fires this via `wire`'s return value.
+    let semanticTokensChangedEmitter: obj = emitJsExpr monaco "new $0.Emitter()"
 
     let provideHover (_model: obj) (position: obj) : JS.Promise<obj> =
         hoverGen <- hoverGen + 1
@@ -1048,7 +1067,8 @@ let wire
     monaco?languages?registerDocumentSemanticTokensProvider (
         "moocode",
         createObj
-            [ "getLegend" ==> System.Func<obj>(fun () -> getSemanticTokensLegend ())
+            [ "onDidChange" ==> semanticTokensChangedEmitter?event
+              "getLegend" ==> System.Func<obj>(fun () -> getSemanticTokensLegend ())
               "provideDocumentSemanticTokens" ==> System.Func<obj, obj, obj, JS.Promise<obj>>(fun m _lastResultId _tok -> provideDocumentSemanticTokens m)
               "releaseDocumentSemanticTokens" ==> System.Action<obj>(fun _resultId -> ()) ]
     )
@@ -1073,68 +1093,6 @@ let wire
     monaco?languages?registerReferenceProvider (
         "moocode",
         createObj [ "provideReferences" ==> System.Func<obj, obj, JS.Promise<obj[]>>(fun m p -> provideReferences m p) ]
-    )
-    |> ignore
-
-    /// Monaco calls this on every visible-range change with the range
-    /// currently in view, unlike hover/references/etc which only fire on a
-    /// single cursor gesture - matches `textDocument/inlayHint`'s own LSP
-    /// shape, which takes a range rather than a position for the same
-    /// reason. Monaco's JS `InlayHintKind`/label/position shapes already
-    /// number-align with the LSP wire values `Handlers.fs`'s
-    /// `TextDocumentInlayHint` sends (`Parameter` = 2 on both sides), so
-    /// they pass straight through with no remapping - only the position's
-    /// 0-based-to-1-based line/column conversion every other provider here
-    /// already does.
-    let provideInlayHints (_model: obj) (range: obj) : JS.Promise<obj> =
-        async {
-            let noHints = createObj [ "hints" ==> [||]; "dispose" ==> System.Action(fun () -> ()) ]
-
-            match getCurrentDocument () with
-            | None -> return noHints
-            | Some(objRef, verbName) ->
-                let delta = getIndentDelta objRef verbName
-                let lineMap = getLineMap objRef verbName
-                let startLspLine, startLspChar = toRawPosition lineMap delta (range?startLineNumber: int) (range?startColumn: int)
-                let endLspLine, endLspChar = toRawPosition lineMap delta (range?endLineNumber: int) (range?endColumn: int)
-
-                let lspRange =
-                    createObj
-                        [ "start" ==> createObj [ "line" ==> startLspLine; "character" ==> startLspChar ]
-                          "end" ==> createObj [ "line" ==> endLspLine; "character" ==> endLspChar ] ]
-
-                let p =
-                    createObj
-                        [ "textDocument" ==> createObj [ "uri" ==> documentUri objRef verbName ]
-                          "range" ==> lspRange ]
-
-                let! result = requestAsync "textDocument/inlayHint" p
-
-                if isNullOrUndefined result then
-                    return noHints
-                else
-                    let lspHints: obj[] = unbox result
-
-                    let monacoHints =
-                        lspHints
-                        |> Array.map (fun h ->
-                            let pos: obj = h?position
-                            let lineNumber, column = toDisplayedPosition lineMap delta (pos?line: int) (pos?character: int)
-
-                            createObj
-                                [ "label" ==> (h?label: string)
-                                  "position" ==> createObj [ "lineNumber" ==> lineNumber; "column" ==> column ]
-                                  "kind" ==> h?kind
-                                  "paddingLeft" ==> h?paddingLeft
-                                  "paddingRight" ==> h?paddingRight ])
-
-                    return createObj [ "hints" ==> monacoHints; "dispose" ==> System.Action(fun () -> ()) ]
-        }
-        |> Async.StartAsPromise
-
-    monaco?languages?registerInlayHintsProvider (
-        "moocode",
-        createObj [ "provideInlayHints" ==> System.Func<obj, obj, obj, JS.Promise<obj>>(fun m r _tok -> provideInlayHints m r) ]
     )
     |> ignore
 
@@ -1196,3 +1154,5 @@ let wire
         createObj [ "openCodeEditor" ==> System.Func<obj, obj, obj, bool>(fun s r sel -> openCodeEditor s r sel) ]
     )
     |> ignore
+
+    fun () -> emitJsStatement semanticTokensChangedEmitter "$0.fire()"

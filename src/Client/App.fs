@@ -605,33 +605,6 @@ module private Settings =
 settingsBtn.onclick <- fun _ -> Settings.show ()
 settingsCloseBtn.onclick <- fun _ -> Settings.hide ()
 
-let private refreshDocsDefaultTitle = "Refresh builtins, $-name resolution, and verb docs from the language server"
-
-// Combined refresh for everything the LanguageServer caches for its own
-// lifetime and never invalidates on its own: the live builtins cache
-// (SidecarBridge.cachedBuiltins) and the static object/verb/property graph
-// (GraphStore, same moodev/reloadGraph the Connection panel's "Switch &
-// Reload" already uses - reused here standalone, against the currently
-// configured tree dir, with no page reload since the target isn't
-// changing). Always visible regardless of which view/tab is active -
-// staleness can show up in the tree, an editor hover, the docs panel, or
-// the eval scratchpad alike, not just the verb code editor.
-refreshDocsBtn.onclick <-
-    fun _ ->
-        async {
-            refreshDocsBtn.setAttribute ("title", "Refreshing...")
-
-            try
-                do! LspClient.clearBuiltinsCacheAsync ()
-                do! LspClient.reloadGraphAsync (settingMooTreeDirEl.value.Trim())
-                refreshDocsBtn.setAttribute ("title", "Refreshed")
-            with ex ->
-                refreshDocsBtn.setAttribute ("title", sprintf "Failed: %s" ex.Message)
-
-            do! Async.Sleep 2000
-            refreshDocsBtn.setAttribute ("title", refreshDocsDefaultTitle)
-        }
-        |> Async.StartImmediate
 staleTabWarningDismissBtn.onclick <- fun _ -> staleTabWarningEl.classList.add "hidden"
 // Backdrop click closes the overlay; the panel stops its own clicks from
 // bubbling to the backdrop, same "stop propagation so an inner click
@@ -4507,11 +4480,19 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
         let vIobj: string = v?iobj
         let vOwnerRef: int64 = int64 (v?ownerRef: float)
         let vDefinerRef: int64 = int64 (v?definerRef: float)
+        // "this none this" ("TNT") is the conventional dobj/prep/iobj triple
+        // for a verb meant to be called only programmatically
+        // (`object:verb(...)`) - any other triple means a player's typed
+        // command can match and dispatch straight to it. Colors the verb
+        // name itself (`inspector-verb-tnt`, below) so that distinction is
+        // visible without a dedicated column.
+        let vIsTnt = vDobj = "this" && vPrep = "none" && vIobj = "this"
         // Inherited (defined on an ancestor, not `objRef` itself) - see
         // this function's own module-level doc comment. Clicking still
         // opens the verb for editing, just at its true definer.
         let vIsOwn = vDefinerRef = objRef
         if not vIsOwn then tr.classList.add "inspector-row-inherited"
+        if vIsTnt then tr.classList.add "inspector-verb-tnt-row"
         tr.onclick <- fun _ -> openOrSwitchToVerb vDefinerRef verbName
 
         let nameTd =
@@ -8116,26 +8097,70 @@ let private runRenameSymbolFlow () : unit =
 Monaco.registerRenameAction editor (fun () -> runRenameSymbolFlow ())
 Monaco.registerShowHoverKeybinding editor
 
-Monaco.wireLsp
-    currentVerbDoc
-    (fun objRef verbName line col ->
-        if activeTab = VerbTab(objRef, verbName) then
-            // Same document (e.g. a local variable's definition, which
-            // always targets the verb already open) - already loaded, so
-            // the cursor can move right away; going through
-            // `revealAndOpenVerb` would just no-op anyway (`switchToTab`
-            // skips work when its argument already equals `activeTab`).
-            editor.setPosition (createObj [ "lineNumber" ==> line; "column" ==> col ])
-            editor.revealPositionInCenter (createObj [ "lineNumber" ==> line; "column" ==> col ])
-        else
-            // A different verb (a VerbCall dispatch jump) - `line`/`col`
-            // are always (1,1) here server-side (`locationOfVerb` has no
-            // per-statement spans to offer), which is where a freshly-
-            // loaded verb's cursor starts anyway, so nothing more to do
-            // once it's open.
-            revealAndOpenVerb objRef verbName)
-    (fun message -> editorDiagnosticsEl.textContent <- message)
-    getIndentDeltaFor
-    getLineMapFor
+let private refreshSemanticTokens =
+    Monaco.wireLsp
+        currentVerbDoc
+        (fun objRef verbName line col ->
+            if activeTab = VerbTab(objRef, verbName) then
+                // Same document (e.g. a local variable's definition, which
+                // always targets the verb already open) - already loaded, so
+                // the cursor can move right away; going through
+                // `revealAndOpenVerb` would just no-op anyway (`switchToTab`
+                // skips work when its argument already equals `activeTab`).
+                editor.setPosition (createObj [ "lineNumber" ==> line; "column" ==> col ])
+                editor.revealPositionInCenter (createObj [ "lineNumber" ==> line; "column" ==> col ])
+            else
+                // A different verb (a VerbCall dispatch jump) - `line`/`col`
+                // are always (1,1) here server-side (`locationOfVerb` has no
+                // per-statement spans to offer), which is where a freshly-
+                // loaded verb's cursor starts anyway, so nothing more to do
+                // once it's open.
+                revealAndOpenVerb objRef verbName)
+        (fun message -> editorDiagnosticsEl.textContent <- message)
+        getIndentDeltaFor
+        getLineMapFor
+
+let private refreshDocsDefaultTitle = "Refresh builtins, $-name resolution, and verb docs from the language server"
+
+// Combined refresh for everything the LanguageServer/client cache for their
+// own lifetime and never invalidate on their own: the live builtins cache
+// (SidecarBridge.cachedBuiltins), the static object/verb/property graph
+// (GraphStore, same moodev/reloadGraph the Connection panel's "Switch &
+// Reload" already uses - reused here standalone, against the currently
+// configured tree dir, with no page reload since the target isn't
+// changing), the client's own `moocodeDocsCache` (fetched once and never
+// invalidated before this - stale by construction otherwise, since nothing
+// else ever clears it), and Monaco's semantic-token highlighting (which
+// only ever recomputes on a content edit or an explicit `onDidChange` fire
+// - `refreshSemanticTokens`, above - never just because server-side data
+// changed). Confirmed live (MOOdy Inbox, 2026-08-14) that without the docs-
+// cache clear and the semantic-tokens nudge, a full page reload was the
+// only thing that actually showed updated highlighting/docs after this
+// button, even though the LSP-side caches had already cleared correctly.
+// Always visible regardless of which view/tab is active - staleness can
+// show up in the tree, an editor hover, the docs panel, or the eval
+// scratchpad alike, not just the verb code editor.
+refreshDocsBtn.onclick <-
+    fun _ ->
+        async {
+            refreshDocsBtn.setAttribute ("title", "Refreshing...")
+
+            try
+                do! LspClient.clearBuiltinsCacheAsync ()
+                do! LspClient.reloadGraphAsync (settingMooTreeDirEl.value.Trim())
+                moocodeDocsCache <- None
+
+                if activeSidebarView = DocsView then
+                    switchToSidebarView DocsView
+
+                refreshSemanticTokens ()
+                refreshDocsBtn.setAttribute ("title", "Refreshed")
+            with ex ->
+                refreshDocsBtn.setAttribute ("title", sprintf "Failed: %s" ex.Message)
+
+            do! Async.Sleep 2000
+            refreshDocsBtn.setAttribute ("title", refreshDocsDefaultTitle)
+        }
+        |> Async.StartImmediate
 
 inputEl.focus ()

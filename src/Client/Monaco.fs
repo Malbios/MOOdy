@@ -448,12 +448,13 @@ let setDiffModel (diffEditor: IDiffEditor) (originalText: string) (modifiedText:
 /// Wires the Phase 4.4 LSP server's hover/definition/completion/signature
 /// help/find-references into this Monaco instance for "moocode" - see
 /// `LspClient.wire` for what the callbacks are for. Call once, after
-/// `create`.
+/// `create`. Returns `wire`'s own `refreshSemanticTokens` trigger unchanged
+/// - see its doc comment.
 let wireLsp
     (getCurrentDocument: unit -> (int64 * string) option)
     (jumpTo: int64 -> string -> int -> int -> unit)
     (showCaveat: string -> unit)
     (getIndentDelta: int64 -> string -> int[] option)
     (getLineMap: int64 -> string -> Sugar.LineMap option)
-    : unit =
+    : (unit -> unit) =
     wire monaco getCurrentDocument jumpTo showCaveat getIndentDelta getLineMap
