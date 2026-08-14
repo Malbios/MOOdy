@@ -1262,28 +1262,6 @@ html, body {
   font-style: normal;
 }
 
-/* Verb name weight: dobj/prep/iobj exactly "this"/"none"/"this" ("TNT") is
-   the conventional triple for a verb meant to be called only
-   programmatically (`object:verb(...)`) - never matched against a player's
-   typed command - vs. any other triple, which IS directly command-
-   invokable. Bold rather than colored so this stays orthogonal to the
-   existing gray/italic ".inspector-row-inherited" styling - an inherited,
-   un-overridden verb should still read as gray (not overridden), with TNT-
-   ness layered on as weight, not a competing color. Scoped to the name
-   column only (`td:first-child` - the Name column is always first) so
-   Owner/Perms/Dobj/Prep/Iobj stay unaffected; the second rule keeps the
-   "#N"/"(overrides #N)" link spans at their normal weight (unlike color,
-   font-weight isn't set on `.inspector-property-value`/those link spans
-   themselves, so this is the only override needed - the editing-mode input
-   just inherits the bold like any other un-styled descendant). */
-.inspector-table tr.inspector-verb-tnt-row td:first-child {
-  font-weight: bold;
-}
-
-.inspector-table tr.inspector-verb-tnt-row td:first-child .inspector-link {
-  font-weight: normal;
-}
-
 .inspector-override-btn {
   background: none;
   border: none;

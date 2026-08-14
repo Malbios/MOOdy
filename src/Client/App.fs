@@ -4483,16 +4483,18 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
         // "this none this" ("TNT") is the conventional dobj/prep/iobj triple
         // for a verb meant to be called only programmatically
         // (`object:verb(...)`) - any other triple means a player's typed
-        // command can match and dispatch straight to it. Colors the verb
-        // name itself (`inspector-verb-tnt`, below) so that distinction is
-        // visible without a dedicated column.
+        // command can match and dispatch straight to it. Prefixes the verb
+        // name with a small icon (`vNamePrefix`, below) rather than a color
+        // or weight change, so this stays fully orthogonal to the existing
+        // gray/italic "inherited, not overridden" styling - tried bold
+        // first, but it was too subtle to scan for at a glance.
         let vIsTnt = vDobj = "this" && vPrep = "none" && vIobj = "this"
+        let vNamePrefix = if vIsTnt then "⚙ " else ""
         // Inherited (defined on an ancestor, not `objRef` itself) - see
         // this function's own module-level doc comment. Clicking still
         // opens the verb for editing, just at its true definer.
         let vIsOwn = vDefinerRef = objRef
         if not vIsOwn then tr.classList.add "inspector-row-inherited"
-        if vIsTnt then tr.classList.add "inspector-verb-tnt-row"
         tr.onclick <- fun _ -> openOrSwitchToVerb vDefinerRef verbName
 
         let nameTd =
@@ -4512,7 +4514,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                 nameInput.value <- vFullNames
 
                 let td =
-                    mkEditableCell verbName nameInput (fun () ->
+                    mkEditableCell (vNamePrefix + verbName) nameInput (fun () ->
                         let newNames = nameInput.value.Trim()
 
                         if newNames <> "" && newNames <> vFullNames then
@@ -4546,7 +4548,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                 td
             else
                 let td = document.createElement ("td")
-                td.appendChild (document.createTextNode verbName) |> ignore
+                td.appendChild (document.createTextNode (vNamePrefix + verbName)) |> ignore
 
                 let definerLink = document.createElement ("span")
                 definerLink.classList.add "inspector-link"
@@ -4575,6 +4577,9 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
                 td.appendChild overrideBtn |> ignore
                 td
+
+        if vIsTnt then
+            nameTd.title <- "API-only verb (dobj/prep/iobj = this/none/this) - not matched against a player's typed command, only reachable as object:verb(...)"
 
         tr.appendChild nameTd |> ignore
         annotateShadowedMember "verb" verbName vDefinerRef nameTd
