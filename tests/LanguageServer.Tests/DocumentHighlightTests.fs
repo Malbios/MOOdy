@@ -54,7 +54,7 @@ let private neverCalledBridge: SidecarBridge =
       ClearBuiltinsCache = fun () -> failwith "should not be called" }
 
 let private serverFor (graph: Graph) : MooLspServer =
-    new MooLspServer(new MooLspClient(), graph, neverCalledBridge)
+    new MooLspServer(new MooLspClient(), (fun () -> graph), neverCalledBridge)
 
 let private highlightsAt (server: MooLspServer) (objRef: ObjRef) (verbName: string) (astLine: int) (astCol: int) : Range[] =
     let p: DocumentHighlightParams =

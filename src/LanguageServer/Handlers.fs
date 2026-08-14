@@ -2068,7 +2068,16 @@ let rec private computeFoldingRanges (stmts: Stmt list) : FoldingRangeEntry list
 type MooLspClient() =
     inherit LspClient()
 
-type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.SidecarBridge) =
+/// `getGraph` is an accessor, not a snapshot - the browser holds one `/lsp`
+/// connection open for its whole page session, so a `Graph` value captured
+/// once here at connection-construction time would freeze every method on
+/// this instance to whatever `GraphStore` held at connect time, forever, no
+/// matter how many times `moodev/reloadGraph` runs afterward on this same
+/// connection. Every method below that touches the graph starts with
+/// `let graph = getGraph ()`, shadowing this parameter with a freshly-read
+/// value for that one request - the ~170 raw `graph.Foo` reads throughout
+/// this class are otherwise unchanged.
+type MooLspServer(_client: MooLspClient, getGraph: unit -> Graph, bridge: SidecarBridge.SidecarBridge) =
     inherit LspServer()
 
     override _.Dispose() = ()
@@ -2157,6 +2166,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     ///     shows up as an `AstQuery` reference.
     override _.TextDocumentHover(p: HoverParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(enclosingObj, verb) ->
@@ -2234,6 +2244,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     ///     no dispatch involved, just "where did this name come from."
     override _.TextDocumentDefinition(p: DefinitionParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(enclosingObj, verb) ->
@@ -2276,6 +2287,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// live in the same verb as the cursor anyway.
     override _.TextDocumentDocumentHighlight(p: DocumentHighlightParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(_, verb) ->
@@ -2325,6 +2337,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// `endif`/`endfor`/... keyword's line).
     override _.TextDocumentFoldingRange(p: FoldingRangeParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(_, verb) ->
@@ -2361,6 +2374,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// completion remains out of scope per the plan doc's own v1 decision.
     override _.TextDocumentCompletion(p: CompletionParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(enclosingObj, verb) ->
@@ -2403,6 +2417,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// `VerbCall` nodes.
     override _.TextDocumentSignatureHelp(p: SignatureHelpParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(_, verb) ->
@@ -2455,6 +2470,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// beyond the base LSP contract, not a hidden hack.
     override _.TextDocumentReferences(p: ReferenceParams) =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(enclosingObj, verb) ->
@@ -2512,6 +2528,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// dialog and the server-side patch list without a second round trip.
     member _.PrepareRename(p: PrepareRenameParams) : Async<Result<PrepareRenameResult option, JsonRpc.Error>> =
         async {
+            let graph = getGraph ()
             match verbAtUri graph p.TextDocument.Uri with
             | None -> return Ok None
             | Some(enclosingObj, verb) ->
@@ -2576,6 +2593,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// neither a live name nor a `lookups.toml` entry.
     member _.GetObjectTree(_p: obj) : Async<Result<ObjectTreeNode[], JsonRpc.Error>> =
         async {
+            let graph = getGraph ()
             let nodes =
                 graph.Objects
                 |> Map.toSeq
@@ -2612,33 +2630,42 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// reference to, corpus-wide, in one pass rather than searching one verb
     /// at a time via `TextDocumentReferences`.
     member _.FindDeadVerbs(_p: obj) : Async<Result<DeadVerbEntry[], JsonRpc.Error>> =
-        async { return Ok(findDeadVerbs graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findDeadVerbs graph)
+        }
 
     /// Custom method (`moodev/getVerbMetrics`, no params) - the "Verb
     /// complexity size metrics dashboard": every verb's line count, call
     /// count, and max nesting depth, corpus-wide, in one pass.
     member _.GetVerbMetrics(_p: obj) : Async<Result<VerbMetricsEntry[], JsonRpc.Error>> =
-        async { return Ok(computeVerbMetrics graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(computeVerbMetrics graph)
+        }
 
     /// Custom method (`moodev/findDeadProperties`, no params) - the same
     /// "what's safe to delete" report as `FindDeadVerbs`, for properties.
     member _.FindDeadProperties(_p: obj) : Async<Result<DeadPropertyEntry[], JsonRpc.Error>> =
-        async { return Ok(findDeadProperties graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findDeadProperties graph)
+        }
 
     /// Custom method (`moodev/findReferencesToObject`, `{objRef}`) - the
     /// recycle-safety precheck report for one candidate object: every
     /// reference `findReferencesToObject` can confirm statically.
     member _.FindReferencesToObject(p: FindReferencesToObjectParams) : Async<Result<ObjectReferenceEntry[], JsonRpc.Error>> =
-        async { return Ok(findReferencesToObject graph p.ObjRef) }
+        async {
+            let graph = getGraph ()
+            return Ok(findReferencesToObject graph p.ObjRef)
+        }
 
     /// Custom method (`moodev/reloadGraph`, `{surviveRoot}`) - reloads
     /// `GraphStore` from `surviveRoot` in place, without restarting the
-    /// process. This connection's own `graph` (the ctor-captured field every
-    /// other member reads) stays whatever it was for the rest of its short
-    /// remaining lifetime - the *next* `/lsp` connection (i.e. the browser's
-    /// own reload right after a successful sidecar target switch) is what
-    /// actually picks up the fresh graph, via `Program.fs`'s per-connection
-    /// `GraphStore.get ()` read.
+    /// process. Every other member reads `getGraph ()` fresh at the top of
+    /// its own body, so this connection's *very next* request (no new
+    /// connection needed) already sees the reloaded graph.
     member _.ReloadGraph(p: ReloadGraphParams) : Async<Result<unit, JsonRpc.Error>> =
         async {
             GraphStore.reload p.SurviveRoot
@@ -2668,6 +2695,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// principle lag behind a very recent live edit).
     member _.ResolveEffectiveMember(p: ResolveEffectiveMemberParams) : Async<Result<ObjRef option, JsonRpc.Error>> =
         async {
+            let graph = getGraph ()
             let result =
                 match p.Kind with
                 | "verb" -> Metadata.Resolver.findCallableVerb graph p.ObjRef p.Name |> Option.map fst
@@ -2682,7 +2710,10 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// verb, corpus-wide, reusing the same resolve-callee primitives
     /// `ResolveEffectiveMember`/dead-verb detection already lean on.
     member _.GetCallGraph(p: GetCallGraphParams) : Async<Result<CallGraphResult, JsonRpc.Error>> =
-        async { return Ok(getCallGraph graph p.ObjRef p.VerbName) }
+        async {
+            let graph = getGraph ()
+            return Ok(getCallGraph graph p.ObjRef p.VerbName)
+        }
 
     /// Custom method (`moodev/getSemanticTokens`, `{objRef, verbName}`) -
     /// resolver-driven semantic highlighting for that verb. Not a real
@@ -2695,6 +2726,7 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// `LspClient.fs`'s top-of-file doc comment).
     member _.GetSemanticTokens(p: GetSemanticTokensParams) : Async<Result<SemanticTokenEntry[], JsonRpc.Error>> =
         async {
+            let graph = getGraph ()
             match verbAtUri graph (moodevVerbUri p.ObjRef p.VerbName) with
             | None -> return Ok [||]
             | Some(enclosingObj, verb) ->
@@ -2710,13 +2742,19 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// missing `x` bit despite a confirmed caller, an unbounded loop with no
     /// `suspend()`, or a `list[0]`-shaped index, corpus-wide.
     member _.FindGotchas(_p: obj) : Async<Result<GotchaEntry[], JsonRpc.Error>> =
-        async { return Ok(findGotchas graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findGotchas graph)
+        }
 
     /// Custom method (`moodev/findTodos`, no params) - the TODO/FIXME
     /// scanner: every verb `findTodos` flags for a leading doc-comment line
     /// starting with `TODO:`/`FIXME:`, corpus-wide.
     member _.GetTodos(_p: obj) : Async<Result<TodoEntry[], JsonRpc.Error>> =
-        async { return Ok(findTodos graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findTodos graph)
+        }
 
     /// Custom method (`moodev/findTestVerbs`, no params) - the in-IDE test
     /// runner's own discovery step: every `test_`-prefixed verb, corpus-wide.
@@ -2724,25 +2762,35 @@ type MooLspServer(_client: MooLspClient, graph: Graph, bridge: SidecarBridge.Sid
     /// until `moodev/reloadGraph` + a fresh export). Running a discovered
     /// test happens on an isolated MOO instance, entirely separate from this.
     member _.GetTestVerbs(_p: obj) : Async<Result<TestVerbEntry[], JsonRpc.Error>> =
-        async { return Ok(findTestVerbs graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findTestVerbs graph)
+        }
 
     /// Custom method (`moodev/findTextOccurrences {query}`) - the "Bulk
     /// find-and-replace" sidebar view's search step: every occurrence of
     /// `query` across every verb's captured source, corpus-wide.
     member _.GetTextOccurrences(p: FindTextOccurrencesParams) : Async<Result<TextOccurrenceEntry[], JsonRpc.Error>> =
-        async { return Ok(findTextOccurrences graph p.Query) }
+        async {
+            let graph = getGraph ()
+            return Ok(findTextOccurrences graph p.Query)
+        }
 
     /// Custom method (`moodev/findPermissionRisks`, no params) - the
     /// permission flag audit report: every verb/property `findPermissionRisks`
     /// flags for a risky writable/ownership combination, corpus-wide.
     member _.FindPermissionRisks(_p: obj) : Async<Result<PermissionRiskEntry[], JsonRpc.Error>> =
-        async { return Ok(findPermissionRisks graph) }
+        async {
+            let graph = getGraph ()
+            return Ok(findPermissionRisks graph)
+        }
 
     /// Custom method (`moodev/getMoocodeDocs`, no params) - the full catalog
     /// for the client's docs sidebar: every control keyword, implicit
     /// variable, and live builtin, one flat searchable list (`moocodeDocs`).
     member _.GetMoocodeDocs(_p: obj) : Async<Result<MoocodeDocEntry[], JsonRpc.Error>> =
         async {
+            let graph = getGraph ()
             let! liveBuiltinsOpt = bridge.GetBuiltins() |> Async.AwaitTask
             return Ok(moocodeDocs graph (liveBuiltinsOpt |> Option.defaultValue Map.empty))
         }

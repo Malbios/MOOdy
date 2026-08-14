@@ -1,14 +1,15 @@
 /// The language server's one shared, reloadable static-analysis graph -
 /// loaded once at process start via `init`, and reloadable in place via
 /// `reload` (the `moodev/reloadGraph` custom method in `Handlers.fs` calls
-/// this) without restarting the process. `Program.fs`'s per-connection
-/// accept code calls `get ()` fresh for each new `/lsp` connection instead of
-/// reusing one process-lifetime value, so a connection accepted *after* a
-/// reload (e.g. the browser's own post-target-switch page reload) picks up
-/// the fresh graph automatically - every existing `Handlers.fs` function
-/// still just takes a plain immutable `Graph` parameter, unchanged, since
-/// each connection's own `MooLspServer` instance only ever needs one
-/// snapshot for its own (short) lifetime.
+/// this) without restarting the process. `Program.fs` passes the `get`
+/// accessor itself (not a called snapshot) through `WsTransport.run` into
+/// `MooLspServer`, which calls `getGraph ()` fresh at the top of every
+/// graph-dependent method - the browser's `/lsp` connection is held open for
+/// its entire page session, so a snapshot taken once per connection (the
+/// original design here) would never observe a later reload at all. Every
+/// existing `Handlers.fs` function below `MooLspServer` still just takes a
+/// plain immutable `Graph` parameter, unchanged - only the server class
+/// itself re-fetches per request.
 module LanguageServer.GraphStore
 
 let mutable private current: Metadata.Schema.Graph =

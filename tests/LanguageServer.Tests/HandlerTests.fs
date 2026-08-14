@@ -256,7 +256,7 @@ let private fakeBridge: SidecarBridge =
       GetBuiltins = fun () -> task { return Some graph.Value.Builtins }
       ClearBuiltinsCache = ignore }
 
-let private server = lazy (new MooLspServer(new MooLspClient(), graph.Value, fakeBridge))
+let private server = lazy (new MooLspServer(new MooLspClient(), (fun () -> graph.Value), fakeBridge))
 
 /// Finds `(objRef, VerbNode)` by object number + verb name - simpler than
 /// the old file's path-suffix matching (a workaround for not knowing real

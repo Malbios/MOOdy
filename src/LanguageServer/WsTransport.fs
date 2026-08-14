@@ -13,7 +13,15 @@ open Metadata.Schema
 open LanguageServer.Handlers
 
 /// Blocks until the client disconnects or the socket closes.
-let run (socket: WebSocket) (graph: Graph) (bridge: SidecarBridge.SidecarBridge) : unit =
+///
+/// Takes `getGraph` (an accessor, not a snapshot) because the browser holds
+/// one `/lsp` connection open for its entire page session - a plain `Graph`
+/// value captured here would freeze every request on this connection to
+/// whatever `GraphStore` held at connect time, forever, no matter how many
+/// times `moodev/reloadGraph` runs afterward. `MooLspServer` calls
+/// `getGraph ()` fresh at the top of every graph-dependent method instead of
+/// once at construction - see its own doc comment.
+let run (socket: WebSocket) (getGraph: unit -> Graph) (bridge: SidecarBridge.SidecarBridge) : unit =
     let handlings =
         Server.defaultRequestHandlings ()
         |> Map.add "moodev/getObjectTree" (Server.serverRequestHandling (fun (s: MooLspServer) (p: obj) -> s.GetObjectTree p))
@@ -43,7 +51,7 @@ let run (socket: WebSocket) (graph: Graph) (bridge: SidecarBridge.SidecarBridge)
             (Server.serverRequestHandling (fun (s: MooLspServer) (p: GetSemanticTokensParams) -> s.GetSemanticTokens p))
 
     let clientCreator (_notify, _request) = new MooLspClient()
-    let serverCreator (client: MooLspClient) = new MooLspServer(client, graph, bridge)
+    let serverCreator (client: MooLspClient) = new MooLspServer(client, getGraph, bridge)
     // `JsonRpc(handler)` is StreamJsonRpc's own plain constructor - no
     // extra customization needed for this phase.
     let customizeRpc (handler: IJsonRpcMessageHandler) = new JsonRpc(handler)

@@ -32,16 +32,18 @@ let main args =
             task {
                 if ctx.WebSockets.IsWebSocketRequest then
                     use! webSocket = ctx.WebSockets.AcceptWebSocketAsync()
-                    // `GraphStore.get ()` is read fresh per connection, not
-                    // captured once at process start - so a connection
-                    // accepted after a `moodev/reloadGraph` call (i.e. the
-                    // browser's own post-target-switch page reload) gets the
-                    // up-to-date graph. `Server.startWs` blocks for the
-                    // connection's lifetime running its own message loop -
-                    // off the async continuation thread via Task.Run so it
-                    // doesn't tie up a thread-pool thread for the whole
-                    // session.
-                    do! Task.Run(fun () -> WsTransport.run webSocket (GraphStore.get ()) bridge)
+                    // `GraphStore.get` (the accessor function, not a called
+                    // snapshot) is passed straight through so every request
+                    // on this connection - not just the first one - reads
+                    // whatever's current at request time. The browser holds
+                    // one `/lsp` connection open for its whole page session,
+                    // so a snapshot taken here at accept time would never see
+                    // a later `moodev/reloadGraph` at all. `Server.startWs`
+                    // blocks for the connection's lifetime running its own
+                    // message loop - off the async continuation thread via
+                    // Task.Run so it doesn't tie up a thread-pool thread for
+                    // the whole session.
+                    do! Task.Run(fun () -> WsTransport.run webSocket GraphStore.get bridge)
                 else
                     ctx.Response.StatusCode <- StatusCodes.Status400BadRequest
             })
