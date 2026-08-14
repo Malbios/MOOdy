@@ -1217,6 +1217,17 @@ html, body {
   font-style: italic;
 }
 
+/* Own verb/property row drag-to-reorder - same visual language as
+   .tree-row.dragging / .tree-row.tree-drop-target. */
+.inspector-table tr.dragging {
+  opacity: 0.5;
+}
+
+.inspector-table tr.inspector-row-drop-target {
+  outline: 2px solid #6cf;
+  outline-offset: -2px;
+}
+
 .inspector-definer-link {
   font-style: normal;
 }

@@ -126,9 +126,11 @@ let ``parseObjectMoo round-trips renderObjectMoo - parents, flags, properties, v
         Assert.Equal(3L, parsed.Owner)
         Assert.Equal<string list>([ "r"; "f" ], parsed.Flags)
 
-        // Properties come back sorted by name (that's the render's own
-        // sort), so compare against the same sorted expectation.
-        Assert.Equal<string list>([ "alpha"; "zeta" ], parsed.Properties |> List.map (fun p -> p.Name))
+        // Property declaration order preserved exactly through a full
+        // render/parse round trip - no exporter-side sort (`zeta` before
+        // `alpha` above is deliberately not alphabetical), same reasoning
+        // as verb declaration order below.
+        Assert.Equal<string list>([ "zeta"; "alpha" ], parsed.Properties |> List.map (fun p -> p.Name))
 
         // Verb declaration order preserved exactly - this is the whole
         // point of the verbs: manifest line.

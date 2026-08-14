@@ -48,7 +48,10 @@ type ParsedObject =
       Parents: ParentRef list
       Owner: int64
       Flags: string list
-      /// Sorted by name in the file (FORMAT.md §3) - order as read.
+      /// Declaration order preserved exactly, order as read (FORMAT.md §3) -
+      /// user-orderable via `reorder_property()`, same round-trip contract
+      /// `Verbs` below already had (no dispatch effect, but a deliberate,
+      /// tracked arrangement rather than a cosmetic one).
       Properties: ParsedProperty list
       /// Declaration order as listed in `verbs:` - preserved exactly
       /// (dispatch is first-match-wins across this list). Paired with the

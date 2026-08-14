@@ -44,8 +44,10 @@ type ObjectExport =
       Parents: int64 list
       Owner: int64
       Flags: string list
-      /// Declaration order as returned by `properties(obj)` - re-sorted by
-      /// name before rendering (see `FORMAT.md` §6).
+      /// Declaration order as returned by `properties(obj)` - preserved
+      /// exactly, both here and when rendered into `object.moo` (see
+      /// `FORMAT.md` §6; user-orderable via `reorder_property()`, same
+      /// round-trip contract `Verbs` below already has).
       Properties: PropertyExport list
       /// Declaration order as returned by `verbs(obj)` - preserved exactly,
       /// both for the `object.moo` `verbs:` manifest and each verb file's
@@ -609,11 +611,10 @@ let renderObjectMoo
     let verbFilesText = verbFileNames |> List.map snd |> String.concat " "
     lines.Add(sprintf "verbs: %s" verbFilesText)
 
-    let sortedProps =
-        data.Properties
-        |> List.sortWith (fun a b -> String.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase))
-
-    for p in sortedProps do
+    // Declaration order preserved exactly, same as verbs above - no sort.
+    // User-orderable via `reorder_property()`; order has no MOO dispatch
+    // effect but is now a deliberate, tracked arrangement (FORMAT.md §6).
+    for p in data.Properties do
         lines.Add("")
         lines.Add(sprintf "@property \"%s\" owner=#%d perms=%s" (escapeQuotedField p.Name) p.Owner p.Perms)
         lines.Add(p.ValueLiteral)

@@ -868,6 +868,14 @@ let mutable private draggedTab: OpenTab option = None
 /// shape as `draggedTab` above, one level down.
 let mutable private draggedTreeObjRef: int64 option = None
 
+/// The own-property/own-verb name currently mid-drag in the inspector's
+/// reorder handlers (`renderInspectorStructure`), or `None` when nothing is
+/// being dragged. Same shape as `draggedTab`/`draggedTreeObjRef` above -
+/// two separate cells since a property and a verb can never be dragged
+/// across each other's tables.
+let mutable private draggedOwnPropertyName: string option = None
+let mutable private draggedOwnVerbName: string option = None
+
 /// The Bulk Find-and-Replace view's own state: the search/replace terms the
 /// current result set was fetched with (threaded back through to the
 /// "bulk-replace" action on Apply, since a checkbox row itself only knows
@@ -3980,6 +3988,16 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
             }
             |> Async.StartImmediate
 
+    // Own-block declaration order, for computing a drag-drop's target
+    // `newIndex` (see the drag handlers below) - `props` is already
+    // stable-sorted so this contiguous trailing slice equals `properties
+    // (objRef)`'s own real order.
+    let ownPropNames =
+        props
+        |> Array.filter (fun p -> int64 (p?definerRef: float) = objRef)
+        |> Array.map (fun p -> p?name: string)
+        |> List.ofArray
+
     for p in props do
         let pname: string = p?name
         let pPerms: string = p?perms
@@ -4181,6 +4199,50 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
         tr.appendChild deleteTd |> ignore
 
+        // Drag-to-reorder, own properties only - same idiom as
+        // `renderTreeRows`' drag-to-reparent / `renderTabs`' drag-to-reorder.
+        // Dropping onto another own row inserts the dragged property
+        // immediately before it (identity-based splice, not index
+        // arithmetic - matches `renderTabs`' own `ondrop`), then sends the
+        // dragged property's resulting 1-based position as `newIndex`.
+        if pIsOwn then
+            tr.setAttribute ("draggable", "true")
+
+            tr.ondragstart <-
+                fun _ ->
+                    draggedOwnPropertyName <- Some pname
+                    tr.classList.add "dragging"
+
+            tr.ondragover <-
+                fun ev ->
+                    match draggedOwnPropertyName with
+                    | Some dragged when dragged <> pname ->
+                        ev.preventDefault ()
+                        tr.classList.add "inspector-row-drop-target"
+                    | _ -> ()
+
+            tr.ondragleave <- fun _ -> tr.classList.remove "inspector-row-drop-target"
+
+            tr.ondrop <-
+                fun ev ->
+                    ev.preventDefault ()
+                    ev.stopPropagation ()
+                    tr.classList.remove "inspector-row-drop-target"
+
+                    match draggedOwnPropertyName with
+                    | Some dragged when dragged <> pname ->
+                        let without = ownPropNames |> List.filter (fun n -> n <> dragged)
+                        let newIndex = (without |> List.findIndex (fun n -> n = pname)) + 1
+                        sendAction [ "action" ==> "reorder-property"; "obj" ==> int objRef; "name" ==> dragged; "newIndex" ==> newIndex ]
+                        draggedOwnPropertyName <- None
+                    | _ -> ()
+
+            tr.ondragend <-
+                fun _ ->
+                    draggedOwnPropertyName <- None
+                    tr.classList.remove "dragging"
+                    tr.classList.remove "inspector-row-drop-target"
+
         propsTable.appendChild tr |> ignore
         inspectorPropertyInputs <- Map.add pname input inspectorPropertyInputs
         inspectorPropertyPreviews <- Map.add pname preview inspectorPropertyPreviews
@@ -4371,6 +4433,16 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
             if d = objRef then System.Int64.MaxValue else d)
 
     verbsTitle.textContent <- sprintf "Verbs (%d)" verbs.Length
+
+    // Own-block declaration order, for computing a drag-drop's target
+    // `newIndex` - same reasoning as `ownPropNames` in the properties table
+    // above (`verbs` is already stable-sorted, own rows are the contiguous
+    // trailing block in true `verbs(objRef)` order).
+    let ownVerbNamesOrdered =
+        verbs
+        |> Array.filter (fun v -> int64 (v?definerRef: float) = objRef)
+        |> Array.map (fun v -> v?name: string)
+        |> List.ofArray
 
     let verbsTable = document.createElement ("table")
     verbsTable.classList.add "inspector-table"
@@ -4637,6 +4709,50 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
             deleteTd.appendChild deleteBtn |> ignore
 
         tr.appendChild deleteTd |> ignore
+
+        // Drag-to-reorder, own verbs only - same idiom as the properties
+        // table above. `stopPropagation` on dragstart/drop, same reasoning
+        // as the delete button's own click handler: without it, a drag
+        // gesture on this row would also fire `tr.onclick`'s "open verb for
+        // editing" behavior.
+        if vIsOwn then
+            tr.setAttribute ("draggable", "true")
+
+            tr.ondragstart <-
+                fun ev ->
+                    draggedOwnVerbName <- Some verbName
+                    ev.stopPropagation ()
+                    tr.classList.add "dragging"
+
+            tr.ondragover <-
+                fun ev ->
+                    match draggedOwnVerbName with
+                    | Some dragged when dragged <> verbName ->
+                        ev.preventDefault ()
+                        tr.classList.add "inspector-row-drop-target"
+                    | _ -> ()
+
+            tr.ondragleave <- fun _ -> tr.classList.remove "inspector-row-drop-target"
+
+            tr.ondrop <-
+                fun ev ->
+                    ev.preventDefault ()
+                    ev.stopPropagation ()
+                    tr.classList.remove "inspector-row-drop-target"
+
+                    match draggedOwnVerbName with
+                    | Some dragged when dragged <> verbName ->
+                        let without = ownVerbNamesOrdered |> List.filter (fun n -> n <> dragged)
+                        let newIndex = (without |> List.findIndex (fun n -> n = verbName)) + 1
+                        sendAction [ "action" ==> "reorder-verb"; "obj" ==> int objRef; "verb" ==> dragged; "newIndex" ==> newIndex ]
+                        draggedOwnVerbName <- None
+                    | _ -> ()
+
+            tr.ondragend <-
+                fun _ ->
+                    draggedOwnVerbName <- None
+                    tr.classList.remove "dragging"
+                    tr.classList.remove "inspector-row-drop-target"
 
         verbsTable.appendChild tr |> ignore
 
@@ -7275,9 +7391,11 @@ onWsMessage <-
                 || header.StartsWith("moodev-flag-set-result")
                 || header.StartsWith("moodev-verb-info-set-result")
                 || header.StartsWith("moodev-verb-args-set-result")
+                || header.StartsWith("moodev-verb-reorder-result")
+                || header.StartsWith("moodev-prop-reorder-result")
             then
-                // owner/flag/verb-info/verb-args changes touch data the
-                // tree never renders, so nothing to keep in sync outside
+                // owner/flag/verb-info/verb-args/reorder changes touch data
+                // the tree never renders, so nothing to keep in sync outside
                 // the inspector pane - still fine to only refresh when
                 // that tab is active.
                 match headerField "object: #" header with

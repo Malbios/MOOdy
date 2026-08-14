@@ -50,11 +50,20 @@ type ObjectPlan =
       DesiredParents: ParentRef list
       ParentsPreview: ParentsPreview
       PropertyOps: PropertyOp list
-      /// `Some desiredOrder` when the verb set or declaration order changed
-      /// at all - applied as delete-everything-current, then add-everything
-      /// in `desiredOrder` (with code). `None` means the verb set and order
-      /// are unchanged; `VerbOps` then carries only info/args/code updates
-      /// for the matched-by-name-spec verbs.
+      /// `Some desiredNames` when the property set or declaration order
+      /// changed at all - applied via `reorder_property()` after
+      /// `PropertyOps` has run. `None` means no order change. Not mutually
+      /// exclusive with `PropertyOps`: a set change (`add_property` always
+      /// appends at the tail) still needs a reorder pass afterward to place
+      /// new/moved properties at their desired position - same reasoning
+      /// as `VerbReorder` below.
+      PropertyReorder: string list option
+      /// `Some desiredOrder` when the verb set or declaration order changed at
+      /// all - applied via `reorder_verb()` (relinking each name to its final
+      /// 1-based position) after `VerbOps` has run. `None` means no order
+      /// change. Not mutually exclusive with `VerbOps`: a verb set change
+      /// (`add_verb` always appends at the tail) still needs a reorder pass
+      /// afterward to place new/moved verbs at their desired position.
       VerbReorder: VerbExport list option
       VerbOps: VerbOp list }
 
@@ -113,6 +122,31 @@ let planObject
               if not (Map.containsKey name desiredPropsByName) then
                   yield DeleteProperty name ]
 
+    // Same "surviving order" comparison as verbs below, restricted to
+    // property names present in both current and desired.
+    let currentPropNameSet = currentPropsByName |> Map.toList |> List.map fst |> Set.ofList
+    let desiredPropNameSet = desiredPropsByName |> Map.toList |> List.map fst |> Set.ofList
+    let propertySetChanged = currentPropNameSet <> desiredPropNameSet
+
+    let survivingCurrentPropOrder =
+        currentOrEmpty.Properties |> List.map (fun p -> p.Name) |> List.filter desiredPropNameSet.Contains
+
+    let desiredPropOrderRestrictedToSurviving =
+        desired.Properties |> List.map (fun p -> p.Name) |> List.filter currentPropNameSet.Contains
+
+    let propertyOrderChanged = survivingCurrentPropOrder <> desiredPropOrderRestrictedToSurviving
+
+    // Triggered by a set change too, not just order among survivors -
+    // `add_property` always appends new properties at the tail
+    // (`db_add_propdef`, `db_properties.cc`), same as `add_verb`, so a new
+    // property still needs an explicit reorder pass to land at its desired
+    // position rather than wherever the tail happens to be.
+    let propertyReorder =
+        if propertySetChanged || propertyOrderChanged then
+            Some(desired.Properties |> List.map (fun p -> p.Name))
+        else
+            None
+
     let currentVerbsByNames = currentOrEmpty.Verbs |> List.map (fun v -> v.Names, v) |> Map.ofList
     let desiredVerbsByNames = desired.Verbs |> List.map (fun v -> v.Names, v) |> Map.ofList
 
@@ -133,14 +167,15 @@ let planObject
 
     let orderChanged = survivingCurrentOrder <> desiredOrderRestrictedToSurviving
 
-    let verbReorder, verbOps =
-        if setChanged || orderChanged then
-            Some desired.Verbs, []
-        else
-            None,
-            [ for KeyValue(names, dv) in desiredVerbsByNames do
-                  let cv = currentVerbsByNames.[names] // set unchanged, so this always exists
-
+    // Verb-shape ops (add/delete/info/args/code) are always computed from
+    // the name-keyed diff, independent of whether order also changed -
+    // `reorder_verb()` (below, in `applyPlan`) is a separate pass applied
+    // after these run, not a replacement for them.
+    let verbOps =
+        [ for KeyValue(names, dv) in desiredVerbsByNames do
+              match Map.tryFind names currentVerbsByNames with
+              | None -> yield AddVerb dv
+              | Some cv ->
                   if cv.Owner <> dv.Owner || cv.Perms <> dv.Perms then
                       yield UpdateVerbInfo(names, dv.Owner, dv.Perms)
 
@@ -148,13 +183,19 @@ let planObject
                       yield UpdateVerbArgs(names, dv.Dobj, dv.Prep, dv.Iobj)
 
                   if cv.Code <> dv.Code then
-                      yield UpdateVerbCode(names, dv.Code) ]
+                      yield UpdateVerbCode(names, dv.Code)
+          for KeyValue(names, _) in currentVerbsByNames do
+              if not (Map.containsKey names desiredVerbsByNames) then
+                  yield DeleteVerb names ]
+
+    let verbReorder = if setChanged || orderChanged then Some desired.Verbs else None
 
     { Corponym = corponym
       NeedsCreate = current.IsNone
       DesiredParents = desired.Parents
       ParentsPreview = parentsPreview
       PropertyOps = propertyOps
+      PropertyReorder = propertyReorder
       VerbReorder = verbReorder
       VerbOps = verbOps }
 
@@ -202,20 +243,18 @@ let planImport
 // plan's decision #4.
 // ---------------------------------------------------------------------------
 
-/// Every verb whose code this plan will write (adds, code updates, and
-/// every verb in a reorder, since reorder deletes-and-recreates all of
-/// them) - collected up front so the whole set can be compile-checked
-/// before touching anything real.
+/// Every verb whose code this plan will write (adds and code updates) -
+/// collected up front so the whole set can be compile-checked before
+/// touching anything real. `VerbReorder` alone never introduces new code
+/// (it only relinks existing verbs via `reorder_verb()`), so a pure reorder
+/// with no `VerbOps` needs no compile-check pass at all.
 let private codeToCheck (plan: Plan) : (string * string list) list =
     [ for op in plan.Objects do
-          match op.VerbReorder with
-          | Some verbs -> for v in verbs -> op.Corponym, v.Code
-          | None ->
-              for verbOp in op.VerbOps do
-                  match verbOp with
-                  | AddVerb v -> yield op.Corponym, v.Code
-                  | UpdateVerbCode(_, code) -> yield op.Corponym, code
-                  | _ -> () ]
+          for verbOp in op.VerbOps do
+              match verbOp with
+              | AddVerb v -> yield op.Corponym, v.Code
+              | UpdateVerbCode(_, code) -> yield op.Corponym, code
+              | _ -> () ]
 
 let private mooLiteralList (lines: string list) : string =
     "{" + (lines |> List.map (fun l -> "\"" + l.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"") |> String.concat ", ") + "}"
@@ -346,33 +385,42 @@ let applyPlan (conn: MooEval.Connection) (plan: Plan) (ct: CancellationToken) : 
 
                 do! runIgnore conn statements ct
 
+            match op.PropertyReorder with
+            | Some desiredNames ->
+                // Fix position 1..N in order - `reorder_property()`
+                // unlinks-then-inserts-at-N-of-the-remaining-list
+                // (`db_reorder_propdef`), so each step only ever touches
+                // positions after the one it just placed.
+                for i, name in List.indexed desiredNames do
+                    do! runIgnore conn $"""reorder_property({o}, "{name}", {i + 1});""" ct
+            | None -> ()
+
+            for verbOp in op.VerbOps do
+                let statements =
+                    match verbOp with
+                    | AddVerb v ->
+                        let firstAlias = v.Names.Split(' ').[0].Replace("*", "")
+
+                        $"""add_verb({o}, {{#{v.Owner}, "{v.Perms}", "{v.Names}"}}, {{"{v.Dobj}", "{v.Prep}", "{v.Iobj}"}}); set_verb_code({o}, "{firstAlias}", {mooLiteralList v.Code});"""
+                    | DeleteVerb names -> $"""delete_verb({o}, "{names.Split(' ').[0]}");"""
+                    | UpdateVerbInfo(names, owner, perms) ->
+                        $"""set_verb_info({o}, "{names.Split(' ').[0]}", {{#{owner}, "{perms}", "{names}"}});"""
+                    | UpdateVerbArgs(names, dobj, prep, iobj) ->
+                        $"""set_verb_args({o}, "{names.Split(' ').[0]}", {{"{dobj}", "{prep}", "{iobj}"}});"""
+                    | UpdateVerbCode(names, code) -> $"""set_verb_code({o}, "{names.Split(' ').[0]}", {mooLiteralList code});"""
+
+                do! runIgnore conn statements ct
+
             match op.VerbReorder with
             | Some desiredVerbs ->
-                do! runIgnore conn $"""for vn in (verbs({o})) delete_verb({o}, vn); endfor""" ct
-
-                for v in desiredVerbs do
+                // Same fix-position-1..N-in-order approach as properties
+                // above (`db_reorder_verb` has the identical unlink-then-
+                // insert-at-N semantics) - runs after `VerbOps` so every
+                // verb in `desiredVerbs` is guaranteed to already exist live.
+                for i, v in List.indexed desiredVerbs do
                     let firstAlias = v.Names.Split(' ').[0].Replace("*", "")
-
-                    let statements =
-                        $"""add_verb({o}, {{#{v.Owner}, "{v.Perms}", "{v.Names}"}}, {{"{v.Dobj}", "{v.Prep}", "{v.Iobj}"}}); set_verb_code({o}, "{firstAlias}", {mooLiteralList v.Code});"""
-
-                    do! runIgnore conn statements ct
-            | None ->
-                for verbOp in op.VerbOps do
-                    let statements =
-                        match verbOp with
-                        | AddVerb v ->
-                            let firstAlias = v.Names.Split(' ').[0].Replace("*", "")
-
-                            $"""add_verb({o}, {{#{v.Owner}, "{v.Perms}", "{v.Names}"}}, {{"{v.Dobj}", "{v.Prep}", "{v.Iobj}"}}); set_verb_code({o}, "{firstAlias}", {mooLiteralList v.Code});"""
-                        | DeleteVerb names -> $"""delete_verb({o}, "{names.Split(' ').[0]}");"""
-                        | UpdateVerbInfo(names, owner, perms) ->
-                            $"""set_verb_info({o}, "{names.Split(' ').[0]}", {{#{owner}, "{perms}", "{names}"}});"""
-                        | UpdateVerbArgs(names, dobj, prep, iobj) ->
-                            $"""set_verb_args({o}, "{names.Split(' ').[0]}", {{"{dobj}", "{prep}", "{iobj}"}});"""
-                        | UpdateVerbCode(names, code) -> $"""set_verb_code({o}, "{names.Split(' ').[0]}", {mooLiteralList code});"""
-
-                    do! runIgnore conn statements ct
+                    do! runIgnore conn $"""reorder_verb({o}, "{firstAlias}", {i + 1});""" ct
+            | None -> ()
     }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +455,7 @@ let describePlan (plan: Plan) : string =
                   op.NeedsCreate
                   || op.ParentsPreview <> ParentsUnchanged
                   || not op.PropertyOps.IsEmpty
+                  || op.PropertyReorder.IsSome
                   || op.VerbReorder.IsSome
                   || not op.VerbOps.IsEmpty
 
@@ -426,8 +475,15 @@ let describePlan (plan: Plan) : string =
                   for p in op.PropertyOps do
                       yield describeProp p
 
+                  match op.PropertyReorder with
+                  | Some names -> yield sprintf "  ~ properties reordered (%d properties)" names.Length
+                  | None -> ()
+
+                  for v in op.VerbOps do
+                      yield describeVerb v
+
                   match op.VerbReorder with
-                  | Some verbs -> yield sprintf "  ~ verbs reordered/changed (%d verbs, full replace)" verbs.Length
-                  | None -> for v in op.VerbOps -> describeVerb v ]
+                  | Some verbs -> yield sprintf "  ~ verbs reordered (%d verbs)" verbs.Length
+                  | None -> () ]
 
     if lines.IsEmpty then "No changes." else String.concat "\n" lines

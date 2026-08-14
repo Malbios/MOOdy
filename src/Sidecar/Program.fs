@@ -575,6 +575,30 @@ let private buildTryDispatch
                                 ct
 
                         return true
+                    | "reorder-verb" ->
+                        do!
+                            IdeActions.reorderVerb
+                                config
+                                session
+                                webSocket
+                                (getObj ())
+                                (getStr "verb")
+                                (root.GetProperty("newIndex").GetInt32())
+                                ct
+
+                        return true
+                    | "reorder-property" ->
+                        do!
+                            IdeActions.reorderProperty
+                                config
+                                session
+                                webSocket
+                                (getObj ())
+                                (getStr "name")
+                                (root.GetProperty("newIndex").GetInt32())
+                                ct
+
+                        return true
                     | "fix-permission-risk" ->
                         do! IdeActions.fixPermissionRisk config session webSocket (getObj ()) (getStr "name") (getStr "kind") ct
 

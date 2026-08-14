@@ -193,12 +193,15 @@ let ``renderVerbFile renders the raw #0 self-reference, not a fabricated $0 corp
     Assert.Contains("@program #0:do_command", result)
 
 [<Fact>]
-let ``renderObjectMoo preserves parent order, sorts properties by name, resolves corponym parents`` () =
+let ``renderObjectMoo preserves parent order, preserves property declaration order, resolves corponym parents`` () =
     let data: ObjectExport =
         { Parents = [ 4L; 1L ] // deliberately not in objnum/alpha order - must survive verbatim
           Owner = 2L
           Flags = [ "r"; "f" ]
           Properties =
+            // Deliberately not in alphabetical order - must survive verbatim
+            // (reorder_property() makes this a user-controlled, tracked
+            // arrangement, not a cosmetic sort - FORMAT.md §6).
             [ { Name = "zeta"; Owner = 2L; Perms = "rc"; ValueLiteral = "1" }
               { Name = "alpha"; Owner = 2L; Perms = "rc"; ValueLiteral = "2" } ]
           Verbs = []
@@ -218,12 +221,12 @@ let ``renderObjectMoo preserves parent order, sorts properties by name, resolves
         + "aliases: \"room\" \"generic room\"\n"
         + "verbs: \n"
         + "\n"
-        + "@property \"alpha\" owner=#2 perms=rc\n"
-        + "2\n"
-        + ".\n"
-        + "\n"
         + "@property \"zeta\" owner=#2 perms=rc\n"
         + "1\n"
+        + ".\n"
+        + "\n"
+        + "@property \"alpha\" owner=#2 perms=rc\n"
+        + "2\n"
         + ".\n"
 
     Assert.Equal(expected, result)

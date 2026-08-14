@@ -587,6 +587,52 @@ let setVerbArgs
                 ct
     }
 
+/// Moves a verb to a new 1-based declaration position - `reorder_verb(obj,
+/// verb-desc, new-index)`, resolved to the current index the same way every
+/// other verb-targeting action here does (`resolveVerbIndexStatements`).
+/// Re-exports on success, same as every other verb mutation - unlike
+/// property order (see `reorderProperty`), verb order IS tree-encoded
+/// (`object.moo`'s `verbs:` manifest) and dispatch-relevant, so this must
+/// commit a fresh capture, not just change something live.
+let reorderVerb
+    (config: Config)
+    (session: Session)
+    (webSocket: WebSocket)
+    (objRef: int64)
+    (verbName: string)
+    (newIndex: int)
+    (ct: CancellationToken)
+    : Task<unit> =
+    task {
+        let o = sprintf "#%d" objRef
+        let verbLit = "\"" + verbName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+
+        let statements =
+            resolveVerbIndexStatements o verbLit
+            + $""" ok = 0; errtext = ""; if (idx == 0) errtext = "verb not found"; else try reorder_verb({o}, idx, {newIndex}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry endif;"""
+
+        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+        let root = json.RootElement
+        let ok = root.GetProperty("ok").GetInt32() = 1
+        let errtext = root.GetProperty("errtext").GetString()
+
+        let! diagnostics =
+            task {
+                if not ok then
+                    return [ errtext ]
+                else
+                    let! gitError = exportAndCommitObject config session objRef verbName GitStore.Modified true ct
+                    return gitError |> Option.map (fun m -> [ "(reordered, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+            }
+
+        do!
+            sendWire
+                webSocket
+                (sprintf "moodev-verb-reorder-result object: #%d ok: %d" objRef (if ok then 1 else 0))
+                diagnostics
+                ct
+    }
+
 /// `rename-verb {objRef, oldName, newName, sites}` - the custom, server-
 /// orchestrated batch rename (`moodev/prepareRename`'s own doc comment
 /// explains why this isn't `textDocument/rename`): renames the verb itself
@@ -1228,6 +1274,53 @@ let deleteProperty
             sendWire
                 webSocket
                 (sprintf "moodev-prop-delete-result object: #%d name: %s ok: %d" objRef pname (if ok then 1 else 0))
+                diagnostics
+                ct
+    }
+
+/// Moves a property to a new 1-based declaration position -
+/// `reorder_property(obj, prop-desc, new-index)`, addressed directly by
+/// name (no index-resolution helper needed or exists for properties, unlike
+/// verbs' alias matching - `reorder_property`'s own `E_PROPNF` for
+/// inherited-only properties already matches this action's own-only UI
+/// gating). Re-exports on success: property order has no MOO dispatch
+/// effect, but is now tracked/round-tripped through the export tree the
+/// same way verb order already is (`FORMAT.md` §6), so a live reorder
+/// still needs a fresh capture, same as `setPropertyInfo`.
+let reorderProperty
+    (config: Config)
+    (session: Session)
+    (webSocket: WebSocket)
+    (objRef: int64)
+    (pname: string)
+    (newIndex: int)
+    (ct: CancellationToken)
+    : Task<unit> =
+    task {
+        let o = sprintf "#%d" objRef
+        let pnameLit = "\"" + pname.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+
+        let statements =
+            $"""ok = 0; errtext = ""; try reorder_property({o}, {pnameLit}, {newIndex}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
+
+        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+        let root = json.RootElement
+        let ok = root.GetProperty("ok").GetInt32() = 1
+        let errtext = root.GetProperty("errtext").GetString()
+
+        let! diagnostics =
+            task {
+                if not ok then
+                    return [ errtext ]
+                else
+                    let! gitError = exportAndCommitObject config session objRef pname GitStore.Modified false ct
+                    return gitError |> Option.map (fun m -> [ "(reordered, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+            }
+
+        do!
+            sendWire
+                webSocket
+                (sprintf "moodev-prop-reorder-result object: #%d ok: %d" objRef (if ok then 1 else 0))
                 diagnostics
                 ct
     }

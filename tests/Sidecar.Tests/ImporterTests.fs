@@ -41,7 +41,10 @@ let ``a corponym with no current object needs create and gets every property/ver
     Assert.True(plan.NeedsCreate)
     Assert.Equal<PropertyOp list>([ AddProperty(prop "description" "\"a room\"") ], plan.PropertyOps)
     Assert.Equal(Some [ verb "look_self" [ "return;" ] ], plan.VerbReorder)
-    Assert.Empty(plan.VerbOps)
+    // Verb-shape ops and the reorder pass are no longer mutually exclusive -
+    // a brand-new verb still needs an explicit AddVerb (the reorder pass
+    // only relinks verbs that already exist).
+    Assert.Equal<VerbOp list>([ AddVerb(verb "look_self" [ "return;" ]) ], plan.VerbOps)
 
 [<Fact>]
 let ``identical desired and current produce no operations at all`` () =
@@ -63,6 +66,7 @@ let ``identical desired and current produce no operations at all`` () =
     Assert.False(plan.NeedsCreate)
     Assert.Equal(ParentsUnchanged, plan.ParentsPreview)
     Assert.Empty(plan.PropertyOps)
+    Assert.Equal(None, plan.PropertyReorder)
     Assert.Equal(None, plan.VerbReorder)
     Assert.Empty(plan.VerbOps)
 
@@ -118,6 +122,48 @@ let ``a property removed from the tree is deleted on the target`` () =
     Assert.Equal<PropertyOp list>([ DeleteProperty "obsolete" ], plan.PropertyOps)
 
 [<Fact>]
+let ``adding a property triggers a reorder even though nothing else changed`` () =
+    let p1 = prop "description" "\"a room\""
+    let p2 = prop "light" "1"
+    let desired = parsed [] [ p1; p2 ] []
+
+    let current: ObjectExport =
+        { Parents = []
+          Owner = 2L
+          Flags = []
+          Properties = [ p1 ]
+          Verbs = []
+          LiveName = ""
+          Aliases = [] }
+
+    let plan = planObject "room" desired (Some current) resolveAll
+
+    Assert.Equal(Some [ "description"; "light" ], plan.PropertyReorder)
+    // p1 is unchanged (no op needed for it); only p2 is new.
+    Assert.Equal<PropertyOp list>([ AddProperty p2 ], plan.PropertyOps)
+
+[<Fact>]
+let ``reordering the same property set (no other change) is a reorder, not a no-op`` () =
+    let p1 = prop "description" "\"a room\""
+    let p2 = prop "light" "1"
+    let desired = parsed [] [ p2; p1 ] [] // swapped
+
+    let current: ObjectExport =
+        { Parents = []
+          Owner = 2L
+          Flags = []
+          Properties = [ p1; p2 ]
+          Verbs = []
+          LiveName = ""
+          Aliases = [] }
+
+    let plan = planObject "room" desired (Some current) resolveAll
+
+    Assert.Equal(Some [ "light"; "description" ], plan.PropertyReorder)
+    // Both properties are otherwise unchanged - the reorder pass alone is enough.
+    Assert.Empty(plan.PropertyOps)
+
+[<Fact>]
 let ``adding a verb triggers a reorder even though nothing else changed`` () =
     let v1 = verb "look_self" [ "return;" ]
     let v2 = verb "tell_lines" [ "return;" ]
@@ -135,7 +181,8 @@ let ``adding a verb triggers a reorder even though nothing else changed`` () =
     let plan = planObject "room" desired (Some current) resolveAll
 
     Assert.Equal(Some [ v1; v2 ], plan.VerbReorder)
-    Assert.Empty(plan.VerbOps)
+    // v1 is unchanged (no AddVerb needed for it); only v2 is new.
+    Assert.Equal<VerbOp list>([ AddVerb v2 ], plan.VerbOps)
 
 [<Fact>]
 let ``reordering the same verb set (no other change) is a reorder, not a no-op`` () =
@@ -155,6 +202,8 @@ let ``reordering the same verb set (no other change) is a reorder, not a no-op``
     let plan = planObject "room" desired (Some current) resolveAll
 
     Assert.Equal(Some [ v2; v1 ], plan.VerbReorder)
+    // Both verbs are otherwise unchanged - the reorder pass alone is enough.
+    Assert.Empty(plan.VerbOps)
 
 [<Fact>]
 let ``verb code change with unchanged set and order yields a targeted UpdateVerbCode, not a reorder`` () =
@@ -229,6 +278,7 @@ let ``describePlan reports no changes for an all-unchanged plan`` () =
                 DesiredParents = []
                 ParentsPreview = ParentsUnchanged
                 PropertyOps = []
+                PropertyReorder = None
                 VerbReorder = None
                 VerbOps = [] } ] }
 

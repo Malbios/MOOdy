@@ -150,9 +150,11 @@ verbs: <verb-file-1.moo> <verb-file-2.moo> ...
   plan §5), so this line is purely a manifest: the on-disk *filenames* don't need to encode order
   (see §6), but the *importer* needs this order recorded somewhere to replay `add_verb` faithfully,
   since dispatch is first-match-wins across the declared list. `object.moo` is that "somewhere."
-- **Property order**: sorted by name, ordinal case-insensitive. Unlike verbs, property lookup is
-  purely by name — sibling order has no runtime effect — so this sort is safe and exists purely for
-  stable, readable diffs.
+- **Property order**: preserved exactly, in `properties(obj)`'s own return order — never re-sorted.
+  Unlike verbs, property lookup is purely by name, so this order has no MOO dispatch effect — but
+  it's user-orderable via `reorder_property()` (a ToastStunt builtin), so it's now a deliberate,
+  tracked arrangement rather than a cosmetic one, round-tripped the same way verb declaration order
+  already is.
 - **`name:`/`aliases:`** — the object's live `.name` and `.aliases` values, for the tree
   view/inspector's benefit. **Deliberate exception to invariant I5** ("only defining-object values
   are recorded"): `.name`/`.aliases` are conventionally *declared* once on a root ancestor
@@ -268,15 +270,16 @@ same, then filters to objects with a `$0` corponym (I3) before deciding what get
 | Data | Sorted? | By what | Why |
 |---|---|---|---|
 | `corponyms.moo` entries | **Yes** — imposed | name, ordinal case-insensitive | Cosmetic only; corponym-to-object mapping has no server-side "order" to preserve. |
-| Properties within `object.moo` | **Yes** — imposed | name, ordinal case-insensitive | Property lookup is by name; sibling order has zero runtime effect. Sort exists purely for stable diffs. |
+| **Properties** within `object.moo` | **No — preserve exactly** | `properties(obj)`'s own return order | Property lookup is by name, so order has no dispatch effect — but it's user-orderable via `reorder_property()` and tracked for round-trip fidelity, same reasoning as verb order below. |
 | **Parents** in `object.moo` | **No — preserve exactly** | `parents(obj)`'s own return order | Ancestor search order for multiple-inheritance verb/property resolution. Re-sorting and replaying in sorted order would silently change resolution behavior versus the source DB. |
-| **Verb declaration order** (as replayed by the importer's `add_verb` calls) | **No — preserve exactly** | `verbs(obj)`'s own return order, recorded in `object.moo`'s `verbs:` manifest line | Verb dispatch is first-match-wins across the object's ordered verb list (confirmed both in `toaststunt-dev-environment-plan.md`'s gotchas and the C source's linked-list walk). Sorting verbs alphabetically and replaying them in that order can change which verb wins an ambiguous/overlapping match. |
+| **Verb declaration order** (as replayed by the importer's `add_verb`/`reorder_verb` calls) | **No — preserve exactly** | `verbs(obj)`'s own return order, recorded in `object.moo`'s `verbs:` manifest line | Verb dispatch is first-match-wins across the object's ordered verb list (confirmed both in `toaststunt-dev-environment-plan.md`'s gotchas and the C source's linked-list walk). Sorting verbs alphabetically and replaying them in that order can change which verb wins an ambiguous/overlapping match. |
 | Verb *files on disk* (`verbs/*.moo`) | N/A (one file per verb) | — | Filenames don't need to encode order at all; the `verbs:` manifest line in `object.moo` is the recorded order, not the filesystem. |
 
 This table is a direct refinement of the main plan's invariant I4 ("sorted key order everywhere").
-That phrasing holds for unordered-by-name data (properties, the corponym map) but does **not**
-hold for parents or verb declaration order, both of which are semantically meaningful sequences in
-ToastStunt, not arbitrary keys. Worth reflecting this distinction back into `moo-vcs-plan.md`
+That phrasing holds for the one remaining genuinely-cosmetic case (the corponym map) but does
+**not** hold for parents, verb declaration order, or (as of `reorder_property()`) property order
+either - all three are now preserved-exactly sequences, not arbitrary sort keys, even though only
+parents/verbs affect MOO dispatch. Worth reflecting this distinction back into `moo-vcs-plan.md`
 itself if/when that document is revised.
 
 ---
