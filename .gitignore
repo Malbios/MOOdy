@@ -6,3 +6,4 @@ src/Client/dist/
 .vs/
 *.user
 TestScratchTree/
+.playwright-mcp/
