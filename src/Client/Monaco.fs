@@ -243,6 +243,21 @@ let private moocodeLanguageConfiguration: obj =
 ///   the real compile-time check (`set_verb_code`'s own error list) is
 ///   already authoritative for that - a heuristic red/warning color here
 ///   would just be a second, less trustworthy signal for the same thing.
+/// - `property` (`classifySemanticToken`'s token for any `RefProp` - both
+///   `$foo` property-sugar for `#0.foo` and plain `obj.foo` access) had the
+///   exact same invisibility gap as `method`/`function` above, confirmed
+///   live: `$string_utils:capitalize()` showed `$` in the Monarch grammar's
+///   own reddish `annotation` color (`CC6666`, below) but `string_utils`
+///   itself in the plain, unstyled default foreground, because the live
+///   pass's `RefProp` walk covers a `VerbCall`'s receiver sub-expression too
+///   (`AstQuery.collectExpr`'s `VerbCall` case recurses into `recvE`) and
+///   repaints it with no color at all once semantic tokens load - splitting
+///   one logical `$name` reference into two different colors depending on
+///   whether the static or live pass last touched each half. Reusing
+///   `annotation`'s own `CC6666` here (not a new color) keeps `$foo` a
+///   single consistent hue in both passes, and gives plain `obj.foo`
+///   property access a real color of its own for the first time too, rather
+///   than silently falling back to body text.
 let private moocodeTheme: obj =
     createObj
         [ "base" ==> "vs-dark"
@@ -253,7 +268,8 @@ let private moocodeTheme: obj =
                createObj [ "token" ==> "variable.defaultLibrary"; "foreground" ==> "4864AA" ]
                createObj [ "token" ==> "function"; "foreground" ==> "DCDCAA" ]
                createObj [ "token" ==> "method"; "foreground" ==> "DCDCAA" ]
-               createObj [ "token" ==> "method.unresolved"; "foreground" ==> "DCDCAA"; "fontStyle" ==> "italic" ] |]
+               createObj [ "token" ==> "method.unresolved"; "foreground" ==> "DCDCAA"; "fontStyle" ==> "italic" ]
+               createObj [ "token" ==> "property"; "foreground" ==> "CC6666" ] |]
           "colors" ==> createObj [] ]
 
 /// Registers the "moocode" language and its theme with Monaco. Call once,
