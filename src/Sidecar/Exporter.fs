@@ -116,9 +116,26 @@ type EvalRunner = string -> string -> CancellationToken -> Task<JsonDocument>
 /// not a value lookup); the *expensive*, budget-threatening part is
 /// `typeof(#0.(pname))` - a per-property value lookup by dynamic name -
 /// which is what the `ticks_left()` check actually guards.
-let getCorponyms (evalRunner: EvalRunner) (ct: CancellationToken) : Task<Map<int64, string>> =
+/// Every `#0` property pointing at an object, as `(name, objnum)` pairs -
+/// deliberately a flat list, not a `Map` keyed by either side. Two different
+/// property names commonly point at the same object (confirmed live against
+/// `MOO-World`: `#0.string_utils` and `#0.su` both resolve to `#16`, the
+/// string-utils library - one an established alias, the other a shorter
+/// nickname added later, both still real, current corponyms). An earlier
+/// version of this function returned `Map<int64, string>` - keyed by
+/// *objnum* - so aggregating each chunk's results with `Map.fold`/`Map.add`
+/// silently overwrote one alias with the other every time two names shared
+/// an object, keeping only whichever happened to be added last. That
+/// dropped real, live corponyms before they ever reached `corponyms.moo`,
+/// making every LSP feature (hover, semantic tokens, dead-verb finder, ...)
+/// blind to the discarded alias with no error or warning anywhere - exactly
+/// what broke `$string_utils:capitalize()` highlighting/resolution once
+/// `su` was added alongside it. Callers that want a name-keyed or
+/// objnum-keyed view build it themselves from this list (never lossy in
+/// that direction, since MOO property names are already unique).
+let getCorponyms (evalRunner: EvalRunner) (ct: CancellationToken) : Task<(string * int64) list> =
     task {
-        let mutable acc = Map.empty
+        let acc = ResizeArray<string * int64>()
         let mutable current = 1L
         let mutable resumeFrom = 0L
         let mutable total = 0L
@@ -145,23 +162,40 @@ endfor"""
             let! json = evalRunner statements """["corps" -> corps, "resume_from" -> resume_from, "total" -> total]""" ct
             let root = json.RootElement
 
-            let chunkMap =
+            let chunkPairs =
                 root.GetProperty("corps").EnumerateObject()
                 |> Seq.map (fun prop ->
                     // Values are "#123" strings (tostr() of an OBJ) - strip
                     // the leading '#' and parse the number.
                     let objnumText = prop.Value.GetString().TrimStart('#')
-                    int64 objnumText, prop.Name)
-                |> Map.ofSeq
+                    prop.Name, int64 objnumText)
 
-            acc <- Map.fold (fun m k v -> Map.add k v m) acc chunkMap
+            acc.AddRange(chunkPairs)
             resumeFrom <- root.GetProperty("resume_from").GetInt64()
             total <- root.GetProperty("total").GetInt64()
             current <- resumeFrom
             keepGoing <- resumeFrom <= total
 
-        return acc
+        return List.ofSeq acc
     }
+
+/// Picks one name per object out of `getCorponyms`'s (possibly multi-alias)
+/// pairs, for every caller that needs a single display/directory name per
+/// object rather than the full alias list - which object name to write
+/// `objects/<name>/` under, which name to show in the live UI, which name a
+/// `parents:`/`refText` line renders. Deterministic: alphabetically first,
+/// ordinal case-insensitive - the same comparer `renderCorponymsMoo`'s own
+/// sort already uses, so the canonical name always matches the first line a
+/// human reading `corponyms.moo` would see for this object. Callers that
+/// need every alias (e.g. writing `corponyms.moo` itself) must use the raw
+/// pairs from `getCorponyms` directly - collapsing through this function
+/// first would silently re-lose every alias but the canonical one.
+let canonicalNameByObjnumOf (corponymPairs: (string * int64) list) : Map<int64, string> =
+    corponymPairs
+    |> List.groupBy snd
+    |> List.map (fun (num, names) ->
+        num, names |> List.map fst |> List.sortWith (fun a b -> String.Compare(a, b, StringComparison.OrdinalIgnoreCase)) |> List.head)
+    |> Map.ofList
 
 /// One entry from `function_info()` (no args) - every builtin ToastStunt
 /// registers, confirmed against `ToastStunt/src/functions.cc`'s
@@ -693,10 +727,9 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
         File.WriteAllText(Path.Combine(outputDir, "FORMAT_VERSION"), "1\n")
 
         let evalRunner = MooEval.runAndAwaitJson conn |> withEvalTimeout
-        let! corponymsByObjnum = getCorponyms evalRunner ct
-        let corponymList = corponymsByObjnum |> Map.toList |> List.map (fun (n, name) -> name, n)
+        let! corponymPairs = getCorponyms evalRunner ct
 
-        File.WriteAllText(Path.Combine(outputDir, "corponyms.moo"), renderCorponymsMoo corponymList)
+        File.WriteAllText(Path.Combine(outputDir, "corponyms.moo"), renderCorponymsMoo corponymPairs)
 
         // Connection-wide, one-shot - server-version-specific, not
         // per-object, so it belongs here rather than in the per-corponym
@@ -704,8 +737,13 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
         let! functions = getBuiltinFunctions evalRunner ct
         File.WriteAllText(Path.Combine(outputDir, "builtins.json"), renderBuiltinsJson functions)
 
+        let canonicalNameByObjnum = canonicalNameByObjnumOf corponymPairs
+
         let sortedByName =
-            corponymList |> List.sortWith (fun (a, _) (b, _) -> String.Compare(a, b, StringComparison.OrdinalIgnoreCase))
+            canonicalNameByObjnum
+            |> Map.toList
+            |> List.map (fun (num, name) -> name, num)
+            |> List.sortWith (fun (a, _) (b, _) -> String.Compare(a, b, StringComparison.OrdinalIgnoreCase))
 
         let totalCorponyms = sortedByName.Length
         printfn "Exporting %d corponym-bearing object(s)..." totalCorponyms
@@ -732,7 +770,7 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
 
                     File.WriteAllText(
                         Path.Combine(objDir, "object.moo"),
-                        renderObjectMoo corponymsByObjnum ("$" + name) data verbFileNames
+                        renderObjectMoo canonicalNameByObjnum ("$" + name) data verbFileNames
                     )
 
                     for verb, fileName in verbFileNames do
@@ -750,7 +788,7 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
         // already exported it correctly under that name - exporting it again
         // here would just duplicate every verb/property under a second,
         // redundant `objects/0/` directory.
-        if not (Map.containsKey 0L corponymsByObjnum) then
+        if not (Map.containsKey 0L canonicalNameByObjnum) then
             try
                 let! systemObjectData = getObjectExport evalRunner 0L ct
 
@@ -763,7 +801,7 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
 
                     let verbFileNames = assignVerbFileNames data.Verbs
 
-                    File.WriteAllText(Path.Combine(objDir, "object.moo"), renderObjectMoo corponymsByObjnum "#0" data verbFileNames)
+                    File.WriteAllText(Path.Combine(objDir, "object.moo"), renderObjectMoo canonicalNameByObjnum "#0" data verbFileNames)
 
                     for verb, fileName in verbFileNames do
                         File.WriteAllText(Path.Combine(verbsDir, fileName), renderVerbFile "#0" verb)
@@ -778,7 +816,7 @@ let exportTree (conn: MooEval.Connection) (outputDir: string) (ct: CancellationT
         // plain safety net against silently losing code nobody named, not
         // parity with the corponym-keyed tree (see the card's own
         // accepted-resolution note for the reasoning).
-        let corponymObjnums = corponymsByObjnum |> Map.toList |> List.map fst |> Set.ofList
+        let corponymObjnums = canonicalNameByObjnum |> Map.toList |> List.map fst |> Set.ofList
         let! maxObj = getMaxObject evalRunner ct
 
         let anonVerbsByObjnum = ResizeArray<int64 * VerbExport list>()

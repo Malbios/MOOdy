@@ -129,7 +129,8 @@ let private exportAndCommitObject
     task {
         try
             let evalRunner = evalOnSession session
-            let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+            let! corponymPairs = Exporter.getCorponyms evalRunner ct
+            let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
             // #0 (System Object) is always versioned regardless of
             // corponym - FORMAT.md §1's exception, directory "0", raw "#0"
@@ -210,7 +211,7 @@ let private exportAndCommitObject
                     let objectMooPath = System.IO.Path.Combine(objDir, "object.moo")
                     System.IO.File.WriteAllText(objectMooPath, Exporter.renderObjectMoo corponymsByObjnum selfRefText data verbFileNames)
 
-                    // `corponymsByObjnum` above is always a fresh, live query
+                    // `corponymPairs` above is always a fresh, live query
                     // (`getCorponyms` scans every object-valued property on
                     // #0 right now) - `corponyms.moo` on disk is only ever a
                     // cached snapshot of that, so it needs the same refresh
@@ -219,9 +220,15 @@ let private exportAndCommitObject
                     // `addProperty` then re-exporting rendered a `$name`
                     // parent reference the *next* load couldn't resolve,
                     // since `corponyms.moo` itself was never told about it).
-                    let corponymsList = corponymsByObjnum |> Map.toList |> List.map (fun (num, name) -> name, num)
+                    // Writes the raw pairs, not `corponymsByObjnum` (the
+                    // canonical, one-name-per-object map above) - an object
+                    // can have more than one live corponym alias (confirmed:
+                    // `#0.string_utils`/`#0.su` both point at the same
+                    // object), and collapsing through the canonical map here
+                    // would silently drop every alias but one from disk on
+                    // every single verb/property save.
                     let corponymsPath = System.IO.Path.Combine(config.TreeDir, "corponyms.moo")
-                    System.IO.File.WriteAllText(corponymsPath, Exporter.renderCorponymsMoo corponymsList)
+                    System.IO.File.WriteAllText(corponymsPath, Exporter.renderCorponymsMoo corponymPairs)
 
                     let relativePaths =
                         ResizeArray<string>(
@@ -1074,7 +1081,8 @@ let private cascadeCorponymRename
         affected.Add(targetObjRef)
         targetGitError |> Option.iter (fun m -> diagnostics.Add(sprintf "($%s re-export failed: %s)" newName m))
 
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+        let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
         let! childrenJson =
             evalRunner
@@ -1134,8 +1142,12 @@ let setPropertyInfo
         let! corponymTarget =
             task {
                 if objRef = 0L then
-                    let! corponymsByObjnum = Exporter.getCorponyms (evalOnSession session) ct
-                    return corponymsByObjnum |> Map.toList |> List.tryFind (fun (_, name) -> name = pname) |> Option.map fst
+                    // Full pairs, not the canonical map - `pname` may be a
+                    // non-canonical alias (e.g. renaming `$string_utils`
+                    // when `$su` is the object's canonical name), which a
+                    // canonical-only lookup would never find.
+                    let! corponymPairs = Exporter.getCorponyms (evalOnSession session) ct
+                    return corponymPairs |> List.tryFind (fun (name, _) -> name = pname) |> Option.map snd
                 else
                     return None
             }
@@ -1341,17 +1353,30 @@ let recycleObject
     : Task<unit> =
     task {
         let evalRunner = evalOnSession session
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
-        let corponym = Map.tryFind objRef corponymsByObjnum
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+
+        // Every alias name pointing at this object, not just its canonical
+        // one - an object can have more than one live corponym (confirmed:
+        // `#0.string_utils`/`#0.su` both point at the same object), and
+        // recycling must unregister *all* of them, or whichever alias was
+        // left behind keeps pointing at a garbage/reused object number
+        // after this, same failure mode the doc comment above already
+        // describes for the single-alias case.
+        let corponymNames = corponymPairs |> List.filter (fun (_, num) -> num = objRef) |> List.map fst
         let o = sprintf "#%d" objRef
 
         let statements =
-            match corponym with
-            | Some name ->
-                let nameLit = "\"" + name.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+            match corponymNames with
+            | [] -> $"""ok = 0; errtext = ""; try recycle({o}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
+            | names ->
+                let deletes =
+                    names
+                    |> List.map (fun name ->
+                        let nameLit = "\"" + name.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+                        sprintf "delete_property(#0, %s); " nameLit)
+                    |> String.concat ""
 
-                $"""ok = 0; errtext = ""; try delete_property(#0, {nameLit}); recycle({o}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
-            | None -> $"""ok = 0; errtext = ""; try recycle({o}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
+                $"""ok = 0; errtext = ""; try {deletes}recycle({o}); ok = 1; except err (ANY) errtext = tostr(err[2]); endtry"""
 
         let! json = evalRunner statements """["ok" -> ok, "errtext" -> errtext]""" ct
         let root = json.RootElement
@@ -1363,36 +1388,52 @@ let recycleObject
                 if not ok then
                     return [ errtext ]
                 else
-                    match corponym with
-                    | None -> return []
-                    | Some dirName ->
+                    match corponymNames with
+                    | [] -> return []
+                    | names ->
                         try
-                            let objDir = System.IO.Path.Combine(config.TreeDir, "objects", dirName)
-
+                            // Under the current (post-fix) export scheme only
+                            // the canonical alias ever gets a directory, but
+                            // deleting one per name (each guarded by an
+                            // existence check) is still correct - it's a
+                            // no-op for every non-canonical alias, and
+                            // opportunistically cleans up any leftover
+                            // duplicate directory from before this fix.
                             let removedPaths =
-                                if System.IO.Directory.Exists(objDir) then
-                                    let paths =
-                                        System.IO.Directory.GetFiles(objDir, "*", System.IO.SearchOption.AllDirectories)
-                                        |> Array.map (fun fullPath ->
-                                            System.IO.Path.GetRelativePath(config.TreeDir, fullPath).Replace('\\', '/'))
-                                        |> List.ofArray
+                                names
+                                |> List.collect (fun dirName ->
+                                    let objDir = System.IO.Path.Combine(config.TreeDir, "objects", dirName)
 
-                                    System.IO.Directory.Delete(objDir, true)
-                                    paths
-                                else
-                                    []
+                                    if System.IO.Directory.Exists(objDir) then
+                                        let paths =
+                                            System.IO.Directory.GetFiles(objDir, "*", System.IO.SearchOption.AllDirectories)
+                                            |> Array.map (fun fullPath ->
+                                                System.IO.Path.GetRelativePath(config.TreeDir, fullPath).Replace('\\', '/'))
+                                            |> List.ofArray
 
-                            // Fresh, post-recycle query - #0 no longer has this
-                            // corponym property (deleted above), so
-                            // corponyms.moo needs the same refresh
-                            // `exportAndCommitObject` always does after any
-                            // change that could affect the registry.
-                            let! freshCorponyms = Exporter.getCorponyms evalRunner ct
-                            let corponymsList = freshCorponyms |> Map.toList |> List.map (fun (num, name) -> name, num)
+                                        System.IO.Directory.Delete(objDir, true)
+                                        paths
+                                    else
+                                        [])
+
+                            // Fresh, post-recycle query - #0 no longer has
+                            // any of this object's corponym properties
+                            // (deleted above), so corponyms.moo needs the
+                            // same refresh `exportAndCommitObject` always
+                            // does after any change that could affect the
+                            // registry. Full pairs, not the canonical map -
+                            // see `getCorponyms`'s own comment on why
+                            // collapsing here would lose aliases on disk.
+                            let! freshCorponymPairs = Exporter.getCorponyms evalRunner ct
                             let corponymsPath = System.IO.Path.Combine(config.TreeDir, "corponyms.moo")
-                            System.IO.File.WriteAllText(corponymsPath, Exporter.renderCorponymsMoo corponymsList)
+                            System.IO.File.WriteAllText(corponymsPath, Exporter.renderCorponymsMoo freshCorponymPairs)
 
                             use repo = new LibGit2Sharp.Repository(config.TreeDir)
+
+                            let dirName =
+                                names
+                                |> List.sortWith (fun a b -> System.String.Compare(a, b, System.StringComparison.OrdinalIgnoreCase))
+                                |> List.head
 
                             let message =
                                 GitStore.buildCommitMessage [ { Corponym = dirName; Name = dirName; Kind = GitStore.Removed } ]
@@ -1900,7 +1941,8 @@ endif"""
         if hasError then
             do! sendWire webSocket (sprintf "moodev-live-children object: #%d truncated: 0" objRef) [] ct
         else
-            let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+            let! corponymPairs = Exporter.getCorponyms evalRunner ct
+            let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
             let truncated = root.GetProperty("truncated").GetInt32() = 1
 
             let firstAlias (nameSpec: string) =
@@ -2072,7 +2114,8 @@ let getLiveRoots (config: Config) (session: Session) (webSocket: WebSocket) (ct:
 
         let truncated = accumulated.Count > maxLiveRoots || not scanComplete
 
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+        let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
         let firstAlias (nameSpec: string) =
             nameSpec.Split(' ') |> Array.tryHead |> Option.defaultValue nameSpec
@@ -2167,7 +2210,8 @@ result = ["matches" -> found, "truncated" -> ((total > {maxPropertySearchResults
 
         let! json = evalRunner statements "result" ct
         let root = json.RootElement
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+        let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
         let truncated = root.GetProperty("truncated").GetInt32() = 1
 
         let lines =
@@ -2320,7 +2364,8 @@ result = out;"""
 
         let! json = evalRunner statements "result" ct
         let root = json.RootElement
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+        let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
         let refDisplay (refText: string) =
             let refNum = int64 (refText.TrimStart('#'))
@@ -2948,7 +2993,8 @@ endif"""
             if hasError then
                 do! sendWire webSocket (sprintf "moodev-live-info object: #%d" objRef) [] ct
             else
-                let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+                let! corponymPairs = Exporter.getCorponyms evalRunner ct
+                let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
                 let refOf (objref: string) (name: string) =
                     let r = int64 (objref.TrimStart('#'))
@@ -3065,7 +3111,8 @@ let private resolveVerbPath
     (ct: CancellationToken)
     : Task<(string * string) option> =
     task {
-        let! corponymsByObjnum = Exporter.getCorponyms evalRunner ct
+        let! corponymPairs = Exporter.getCorponyms evalRunner ct
+        let corponymsByObjnum = Exporter.canonicalNameByObjnumOf corponymPairs
 
         // #0 (System Object) is always versioned regardless of corponym -
         // FORMAT.md §1's exception, directory "0" - matching
@@ -3218,8 +3265,8 @@ let searchHistory
     (ct: CancellationToken)
     : Task<unit> =
     task {
-        let! corponymsByObjnum = Exporter.getCorponyms (evalOnSession session) ct
-        let objnumByCorponym = corponymsByObjnum |> Map.toList |> List.map (fun (n, name) -> name, n) |> Map.ofList
+        let! corponymPairs = Exporter.getCorponyms (evalOnSession session) ct
+        let objnumByCorponym = Map.ofList corponymPairs
 
         use repo = new LibGit2Sharp.Repository(config.TreeDir)
         let startCommit = GitStore.resolveParent repo config.SessionId
@@ -3271,8 +3318,8 @@ let searchContent
     (ct: CancellationToken)
     : Task<unit> =
     task {
-        let! corponymsByObjnum = Exporter.getCorponyms (evalOnSession session) ct
-        let objnumByCorponym = corponymsByObjnum |> Map.toList |> List.map (fun (n, name) -> name, n) |> Map.ofList
+        let! corponymPairs = Exporter.getCorponyms (evalOnSession session) ct
+        let objnumByCorponym = Map.ofList corponymPairs
 
         let queryLower = query.ToLowerInvariant()
 

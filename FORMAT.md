@@ -43,6 +43,15 @@ Directory name under `objects/` is the corponym with the `$` stripped. One verb 
 objects with a `$0` corponym get a directory — no-corponym-no-versioning (I3) — which is a
 deliberate change from the current system (see §7).
 
+**An object can have more than one corponym** (two different `#0` properties pointing at the same
+object — confirmed live: `#0.string_utils`/`#0.su` both resolving to the same object). `corponyms.moo`
+(§2) lists every alias, each on its own line, so any of them resolves correctly — but only **one**
+gets an `objects/<name>/` directory, chosen deterministically (alphabetically first, ordinal
+case-insensitive — the same comparer §2's own sort uses, so the canonical name is always the first
+line a reader sees for that object in `corponyms.moo`). This avoids duplicating verb content on disk
+once per alias, which would let the copies silently drift out of sync with each other. A `parents:`
+reference (§3) always renders using this same canonical name, never a secondary alias.
+
 **Exception: `#0` (System Object) always gets a directory, at `objects/0/`, when it has no
 corponym.** By construction it can't easily have one pointing at itself (corponyms are properties
 *on* `#0` pointing elsewhere), yet it's exactly where sidecar/live-IDE bootstrap verbs live

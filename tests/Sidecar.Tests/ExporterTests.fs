@@ -127,6 +127,30 @@ let ``getObjectExport filters out the syntax-check scratch verb but keeps real v
     | Some data -> Assert.Equal<string list>([ "do_command" ], data.Verbs |> List.map (fun v -> v.Names))
 
 // ---------------------------------------------------------------------------
+// getCorponyms - regression coverage for a real data-loss bug: an earlier
+// version aggregated chunks into a `Map<int64, string>` keyed by *objnum*,
+// so two different property names pointing at the same object (confirmed
+// live: `#0.string_utils`/`#0.su` both resolving to the same object) silently
+// collapsed to whichever was added last, dropping the other before it ever
+// reached `corponyms.moo`.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``getCorponyms preserves every alias when multiple names point at the same object`` () =
+    let json = """{"corps": {"string_utils": "#16", "su": "#16", "room": "#3"}, "resume_from": 4, "total": 3}"""
+    let evalRunner: EvalRunner = fun _ _ _ -> task { return JsonDocument.Parse(json) }
+
+    let result = (getCorponyms evalRunner CancellationToken.None).Result |> List.sortBy fst
+
+    Assert.Equal<(string * int64) list>([ "room", 3L; "string_utils", 16L; "su", 16L ], result)
+
+[<Fact>]
+let ``canonicalNameByObjnumOf picks the alphabetically-first alias per object, ordinal case-insensitive`` () =
+    let result = canonicalNameByObjnumOf [ "su", 16L; "string_utils", 16L; "room", 3L ]
+
+    Assert.Equal<Map<int64, string>>(Map.ofList [ 16L, "string_utils"; 3L, "room" ], result)
+
+// ---------------------------------------------------------------------------
 // Rendering - exact text, per FORMAT.md's grammar. Explicit "\n" only, never
 // "\r\n" - these assertions are what catch a future accidental regression to
 // Environment.NewLine (invariant I4: line-ending stability).

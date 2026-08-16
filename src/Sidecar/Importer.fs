@@ -212,10 +212,8 @@ let planImport
     (ct: CancellationToken)
     : Task<Plan> =
     task {
-        let! currentCorponymsByObjnum = getCorponyms (MooEval.runAndAwaitJson conn) ct
-
-        let currentCorponymByName =
-            currentCorponymsByObjnum |> Map.toList |> List.map (fun (n, name) -> name, n) |> Map.ofList
+        let! currentCorponymPairs = getCorponyms (MooEval.runAndAwaitJson conn) ct
+        let currentCorponymByName = Map.ofList currentCorponymPairs
 
         let resolveParentForPreview (r: ParentRef) : int64 option =
             match r with
@@ -336,10 +334,8 @@ let applyPlan (conn: MooEval.Connection) (plan: Plan) (ct: CancellationToken) : 
 
                 do! runIgnore conn statements ct
 
-        let! refreshedCorponyms = getCorponyms (MooEval.runAndAwaitJson conn) ct
-
-        let corponymByName =
-            refreshedCorponyms |> Map.toList |> List.map (fun (n, name) -> name, n) |> Map.ofList
+        let! refreshedCorponymPairs = getCorponyms (MooEval.runAndAwaitJson conn) ct
+        let corponymByName = Map.ofList refreshedCorponymPairs
 
         let resolveParent (r: ParentRef) : int64 =
             match r with
