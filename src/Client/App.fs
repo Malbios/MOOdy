@@ -2956,10 +2956,14 @@ and private mkQuickFillInput
 /// property add-row's Chown-hides-owner wiring - without losing that), and
 /// the aggregate `currentPerms` reader. `onChange` fires (after the
 /// widget's own label refresh) on every checkbox change - a no-op `fun ()
-/// -> ()` for callers that don't need anything extra.
+/// -> ()` for callers that don't need anything extra. `mutuallyExclusive`
+/// - `(letterA, letterB)` pairs where checking one unchecks the other -
+/// exists for verb visibility's `p`/`h` (ToastStunt's `validate_verb_info`
+/// rejects both set at once with E_INVARG); `[]` everywhere else.
 and private mkPermsWidget
     (options: (string * string * string) list)
     (initialPerms: string)
+    (mutuallyExclusive: (string * string) list)
     (onChange: unit -> unit)
     : HTMLElement * (string * HTMLInputElement) list * (unit -> string) =
     let widget = document.createElement ("div")
@@ -3003,9 +3007,18 @@ and private mkPermsWidget
             ev.stopPropagation () |> ignore
             popover.classList.toggle "visible" |> ignore
 
-    for _, cb in checkboxes do
+    for letter, cb in checkboxes do
         cb.onchange <-
             fun _ ->
+                if cb.``checked`` then
+                    mutuallyExclusive
+                    |> List.iter (fun (a, b) ->
+                        let partner = if letter = a then Some b elif letter = b then Some a else None
+
+                        partner
+                        |> Option.iter (fun p ->
+                            checkboxes |> List.tryFind (fun (l, _) -> l = p) |> Option.iter (fun (_, pcb) -> pcb.``checked`` <- false)))
+
                 refreshLabel ()
                 onChange ()
 
@@ -3543,21 +3556,16 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     inspectorPropertyStructuredToggles <- Map.empty
 
     // Whoever is connected on *this* session - shown in the "You" button's
-    // own label (e.g. "You (Wizard (#3))") and used as its actual quick-fill
+    // own label (e.g. "You (#3)" - just the objref, not the display name
+    // too, to keep the button short) and used as its actual quick-fill
     // value (a real resolved objref, not the bare "player" expression - it
     // used to send that literal keyword, but a resolved ref is what was
     // asked for).
-    let connectedPlayerDisplay: obj = info?connectedPlayerDisplay
-
     let connectedPlayerRef: int64 option =
         let raw: obj = info?connectedPlayerRef
         if isNullOrUndefined raw then None else Some(int64 (unbox<float> raw))
 
-    let youLabel =
-        if isNullOrUndefined connectedPlayerDisplay then
-            "You"
-        else
-            sprintf "You (%s)" (unbox<string> connectedPlayerDisplay)
+    let youLabel = connectedPlayerRef |> Option.map (sprintf "You (#%d)") |> Option.defaultValue "You"
 
     // Shared by every owner picker in this pane (property-add, verb-add,
     // header owner-edit) - "This object" is only offered when it wouldn't
@@ -4135,6 +4143,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                           "c",
                           "This property's owner is force-locked to the object's own owner, overriding whatever owner you pick." ]
                         pPerms
+                        []
                         (fun () -> ())
 
                 mkEditableCell pPerms pPermsWidget (fun () ->
@@ -4341,6 +4350,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
               "c",
               "This property's owner is force-locked to the object's own owner, overriding whatever owner you pick." ]
             "r"
+            []
             (fun () -> onPermsChange ())
 
     let chownCb = propPermCheckboxes |> List.find (fun (letter, _) -> letter = "c") |> snd
@@ -4667,8 +4677,15 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                           "Exec", "x", "Other players' code can call this verb."
                           "Debug",
                           "d",
-                          "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed." ]
+                          "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed."
+                          "Protected",
+                          "p",
+                          "Callable only by code whose own verb is defined on this object or a descendant of it - other callers see E_VERBNF, as if the verb didn't exist."
+                          "Private",
+                          "h",
+                          "Callable only by code whose own verb is defined on this exact object - inheriting (without overriding) a private verb does not grant access to it." ]
                         vPerms
+                        [ "p", "h" ]
                         (fun () -> ())
 
                 mkEditableCell vPerms vPermsWidget (fun () ->
@@ -4841,15 +4858,18 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     let addVerbOwnerGroup, addVerbOwnerInput =
         mkQuickFillInput "player, #5, or $room" (sprintf "#%d" objRef) ownerQuickFills false
 
-    // Verbs only ever have four permission bits - r/w/x/d (Read/Write/Exec/
-    // Debug) - confirmed against `ToastStunt/src/verbs.cc`'s
-    // `validate_verb_info`; properties' `c` (Chown) doesn't apply here.
-    // Read+Exec checked by default - a normal callable command verb; Write
-    // and Debug off, matching the properties widget's own "least-surprising
-    // default" convention. Debug's tooltip is verified against
+    // Verbs have six permission bits - r/w/x/d (Read/Write/Exec/Debug) plus
+    // visibility's p/h (Protected/Private) - confirmed against
+    // `ToastStunt/src/verbs.cc`'s `validate_verb_info`; properties' `c`
+    // (Chown) doesn't apply here. Read+Exec checked by default - a normal
+    // callable command verb; Write, Debug, Protected, and Private off,
+    // matching the properties widget's own "least-surprising default"
+    // convention. Debug's tooltip is verified against
     // `ToastStunt/src/execute.cc`'s `RAISE_ERROR` macro - with this flag
     // unset, a runtime error is dropped entirely (not just logged
-    // differently), so the verb silently continues past the failure.
+    // differently), so the verb silently continues past the failure. `p`
+    // and `h` are mutually exclusive (`validate_verb_info` rejects both at
+    // once with E_INVARG), enforced by `mkPermsWidget`'s own last argument.
     let verbPermsWidget, _, currentVerbPerms =
         mkPermsWidget
             [ "Read", "r", "Other players' code can read this verb's source."
@@ -4857,8 +4877,15 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
               "Exec", "x", "Other players' code can call this verb."
               "Debug",
               "d",
-              "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed." ]
+              "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed."
+              "Protected",
+              "p",
+              "Callable only by code whose own verb is defined on this object or a descendant of it - other callers see E_VERBNF, as if the verb didn't exist."
+              "Private",
+              "h",
+              "Callable only by code whose own verb is defined on this exact object - inheriting (without overriding) a private verb does not grant access to it." ]
             "rxd"
+            [ "p", "h" ]
             (fun () -> ())
 
     // "this none this" - a normal command verb takes its own object as
@@ -4894,6 +4921,12 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                       "dobj" ==> dobjSelect.value
                       "prep" ==> prepInput.value.Trim()
                       "iobj" ==> iobjSelect.value ]
+
+    // Enter in the name field submits with whatever the rest of the form
+    // (owner, perms, arg spec) is currently set to - `addVerbBtn.click()`
+    // re-reads all of those fields fresh, so there's nothing extra to wire
+    // up. Same precedent as `corifyInput.onkeydown` elsewhere in this file.
+    addVerbNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addVerbBtn.click ()
 
     let mkVerbCell (child: HTMLElement) : HTMLElement =
         let td = document.createElement ("td")

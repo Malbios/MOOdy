@@ -2994,12 +2994,11 @@ else
       props_out = {{@props_out, ["name" -> pn, "owner" -> tostr(powner), "ownername" -> pownername, "perms" -> pi[2], "definer" -> tostr(x), "definername" -> xname]}};
     endfor
   endfor
-  connplayername = valid(player) ? (typeof(player.name) == STR ? player.name | "") | "";
   result = ["name" -> live_name, "aliases" -> alias_list, "owner" -> tostr({o}.owner), "ownername" -> ownername,
             "player" -> is_player({o}), "programmer" -> {o}.programmer, "wizard" -> {o}.wizard,
             "read" -> {o}.r, "write" -> {o}.w, "fertile" -> {o}.f, "anonymous" -> {o}.a,
             "parents" -> parents_out, "children" -> children_out, "verbs" -> verbs_out, "properties" -> props_out,
-            "connectedPlayer" -> tostr(player), "connectedPlayerName" -> connplayername, "truncated" -> truncated];
+            "connectedPlayer" -> tostr(player), "truncated" -> truncated];
 endif"""
 
         // Every potentially-unbounded loop above (parents, children, the
@@ -3065,9 +3064,6 @@ endif"""
 
                 let connectedPlayerRef = int64 (root.GetProperty("connectedPlayer").GetString().TrimStart('#'))
 
-                let connectedPlayerDisplay =
-                    formatLiveName corponymsByObjnum connectedPlayerRef (root.GetProperty("connectedPlayerName").GetString())
-
                 let payload =
                     {| name = formatLiveName corponymsByObjnum objRef (root.GetProperty("name").GetString())
                        // The raw `.name` value (often empty for an unnamed
@@ -3078,7 +3074,6 @@ endif"""
                        rawName = root.GetProperty("name").GetString()
                        owner = refOf (root.GetProperty("owner").GetString()) (root.GetProperty("ownername").GetString())
                        connectedPlayerRef = connectedPlayerRef
-                       connectedPlayerDisplay = connectedPlayerDisplay
                        aliases = root.GetProperty("aliases").EnumerateArray() |> Seq.map (fun a -> a.GetString()) |> Array.ofSeq
                        player = flag "player"
                        programmer = flag "programmer"
