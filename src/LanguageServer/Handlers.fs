@@ -1650,16 +1650,25 @@ let inferredVerbSummary (stmts: Stmt list) : string option =
 /// above - the same convention-aware parser the MOOcode docs panel already
 /// uses, not a separate weaker one) - the "self-documenting code" hover
 /// feature, extending the same treatment `builtinHoverText` already gives
-/// builtins to user-authored verbs. Degrades cleanly to just the metadata
-/// above (no extra section at all) when `Code` is empty or fails to lex -
-/// never an error, matching every other graceful miss in this dispatcher.
+/// builtins to user-authored verbs. The doc comment (when present) is the
+/// author's own description, so it sits right under the title, ahead of the
+/// names/args/perms/owner metadata block and the auto-inferred summary -
+/// both of those are secondary, mechanically-derived facts, less relevant
+/// than what the verb's own author actually wrote. Degrades cleanly to just
+/// the title/metadata (no extra section at all) when `Code` is empty or
+/// fails to lex - never an error, matching every other graceful miss in
+/// this dispatcher.
 let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.VerbDispatchResult) : Hover =
-    let baseText =
+    let titleLine =
         sprintf
-            "**%s** on `#%d (%s)`\n\nnames: `%s`  \nargs: `%s %s %s`  \nperms: `%s`  \nowner: `%s`"
+            "**%s** on `#%d (%s)`"
             verbName
             result.Definer
             (if result.DefinerName = "" then sprintf "#%d" result.Definer else result.DefinerName)
+
+    let metadataBlock =
+        sprintf
+            "names: `%s`  \nargs: `%s %s %s`  \nperms: `%s`  \nowner: `%s`"
             result.Names
             result.Dobj
             result.Prep
@@ -1667,22 +1676,22 @@ let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.V
             result.Perms
             (liveDisplayName result.OwnerName result.Owner)
 
-    let extraSections =
+    let commentSection, inferredSection =
         if List.isEmpty result.Code then
-            []
+            None, None
         else
             let lexResult = Language.Lexer.tokenize (result.Code |> String.concat "\n")
 
             match lexResult.Error with
-            | Some _ -> []
+            | Some _ -> None, None
             | None ->
                 let stmts = Language.Parser.parse lexResult.Tokens
+                leadingDocComment stmts |> Option.map (sprintf "**Comment:**\n%s"), inferredVerbSummary stmts
 
-                [ inferredVerbSummary stmts
-                  leadingDocComment stmts |> Option.map (sprintf "**Comment:**\n%s") ]
-                |> List.choose id
-
-    (baseText :: extraSections) |> String.concat "\n\n" |> mkHover
+    [ Some titleLine; commentSection; Some metadataBlock; inferredSection ]
+    |> List.choose id
+    |> String.concat "\n\n"
+    |> mkHover
 
 /// One of the catalogued "MOOcode gotchas" (the project plan's own
 /// MOOcode gotchas section, plus the call-site arg-spec mismatch check and
