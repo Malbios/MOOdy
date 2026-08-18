@@ -2122,17 +2122,50 @@ let private syncTreeNodeFromLiveInfo (objRef: int64) (name: string) (newParents:
         else
             rootRefs <- rootRefs |> Array.filter ((<>) objRef)
 
+/// Persisted key for `expandedRefs` below - same plain-JSON-array-of-floats
+/// idiom `watchExprsKey`/`loadWatchExprs`/`saveWatchExprs` use for a
+/// `string list`, adapted for a `Set<int64>` (objRefs round-trip through
+/// `float`, the established int64-over-JSON discipline this file uses
+/// everywhere else, e.g. `encodeActiveTab`).
+let private expandedRefsKey = "moodev-expanded-refs"
+
+let private loadExpandedRefs () : Set<int64> =
+    match window.localStorage.getItem expandedRefsKey with
+    | null -> Set.empty
+    | json ->
+        try
+            (unbox (JS.JSON.parse json): float[]) |> Array.map int64 |> Set.ofArray
+        with _ ->
+            Set.empty
+
+/// Builds a `ResizeArray`, not a plain F# `'T[]`, before handing it to
+/// `JS.JSON.stringify` - confirmed live this was load-bearing, not
+/// stylistic: Fable compiles a numeric `'T[]` (here, `float[]`) to a JS
+/// *typed* array (`Float64Array`) as a perf optimization, and
+/// `JSON.stringify` on a typed array serializes it as a plain object keyed
+/// by index (`{"0":5}`) rather than a real JSON array (`[5]`) - silently
+/// producing a value `loadExpandedRefs`'s own `float[]` cast could never
+/// parse back correctly. `ResizeArray<'T>` always compiles to a genuine
+/// mutable JS `Array`, so `JSON.stringify` serializes it the same way it
+/// already does for the plain `string[]`/`string list` case
+/// `watchExprsKey` above uses (never numeric, so never hit this).
+let private saveExpandedRefs (refs: Set<int64>) : unit =
+    let arr = ResizeArray<float>(refs |> Set.toSeq |> Seq.map float)
+    window.localStorage.setItem (expandedRefsKey, JS.JSON.stringify arr)
+
 /// Which object nodes are expanded, by objRef - a `Set`, not per-occurrence:
 /// expanding #7 once should reveal its children under *every* parent it
 /// appears under (the object graph is a DAG - see the project plan's
 /// "Known hazards"), not just the occurrence that was clicked, since expand
 /// state belongs to the object, not to one place it happens to be reachable
-/// from. Reset on every fresh login/tree rebuild, never persisted across
-/// reloads - unlike the font-size/word-wrap settings (stable preferences),
-/// which nodes are expanded is transient exploration state, and the
-/// filter's auto-expand (below) already covers "reveal what I'm looking
-/// for" on demand.
-let mutable private expandedRefs: Set<int64> = Set.empty
+/// from. Persisted across reloads (`expandedRefsKey` above) by request - an
+/// earlier version of this comment called expand state "transient
+/// exploration state" deliberately not persisted, unlike the tab layout;
+/// the inbox item this shipped under asked for exactly the opposite.
+/// Loaded once here at module init (same convention as `watchExprs`
+/// below); the login handler's tree-rebuild re-loads it again rather than
+/// resetting to empty - see that handler's own comment.
+let mutable private expandedRefs: Set<int64> = loadExpandedRefs ()
 
 /// Objects whose live children have been asked for at least once (a
 /// `get-live-children` round trip has landed, whether or not it turned up
@@ -2236,7 +2269,9 @@ let private directChildEdges (rootRef: int64) : (int64 * int64) list =
 let private promoteFilterExpansionIfAny () : unit =
     match lastFilterSelectedObjRef with
     | None -> ()
-    | Some objRef -> expandedRefs <- Set.union expandedRefs (Set.add objRef (ancestorsOf Set.empty objRef))
+    | Some objRef ->
+        expandedRefs <- Set.union expandedRefs (Set.add objRef (ancestorsOf Set.empty objRef))
+        saveExpandedRefs expandedRefs
 
 /// Live filter text, updated on every keystroke in the tree's filter box -
 /// see the `oninput` wiring below.
@@ -6126,6 +6161,7 @@ and private renderTreeRows (rows: TreeRow list) : unit =
                         let wasExpanded = Set.contains objRef expandedRefs
 
                         expandedRefs <- if wasExpanded then Set.remove objRef expandedRefs else Set.add objRef expandedRefs
+                        saveExpandedRefs expandedRefs
 
                         // Every expand asks live, unconditionally - there's no
                         // reliable client-side signal for "this corponym'd
@@ -6305,6 +6341,7 @@ and private renderTree () : unit =
 /// knows exactly which verb it wants open.
 and private revealAndOpenVerb (objRef: int64) (verbName: string) : unit =
     expandedRefs <- Set.union expandedRefs (Set.add objRef (ancestorsOf Set.empty objRef))
+    saveExpandedRefs expandedRefs
     renderTree ()
     openOrSwitchToVerb objRef verbName
 
@@ -7129,7 +7166,14 @@ onWsMessage <-
                     async {
                         let! nodes = LspClient.getObjectTreeAsync ()
                         buildTree nodes
-                        expandedRefs <- Set.empty
+                        // Re-loaded from storage, not reset to empty - expand
+                        // state now persists across reloads (`expandedRefs`'s
+                        // own comment); `liveChildrenChecked`/
+                        // `liveChildrenRequested` are unrelated per-connection
+                        // bookkeeping (has this session already asked the
+                        // live server about this node's children), not
+                        // user-visible state, so those still reset normally.
+                        expandedRefs <- loadExpandedRefs ()
                         liveChildrenChecked <- Set.empty
                         liveChildrenRequested <- Set.empty
                         selectedObjRef <- None
@@ -7524,6 +7568,7 @@ onWsMessage <-
                             // `openOrSwitchToInspector` can show anything
                             // useful for it.
                             expandedRefs <- Set.add parentRef expandedRefs
+                            saveExpandedRefs expandedRefs
                             sendAction [ "action" ==> "get-live-children"; "obj" ==> int parentRef ]
                             // Covers creating a parentless object (e.g.
                             // parent `#-1`) - `parentRef` above would be
