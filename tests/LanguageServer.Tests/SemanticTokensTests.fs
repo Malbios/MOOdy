@@ -88,6 +88,12 @@ let ``a verb call with an unresolvable receiver classifies as method with the un
     Assert.Equal(Some [| "unresolved" |], entry |> Option.map (fun e -> e.TokenModifiers))
 
 [<Fact>]
+let ``$foo(args) call-sugar classifies as property with the corponym modifier, not method`` () =
+    let entry = classify [] [] (refAt 1 2 12 (RefVerbCall(ObjLit 0L, StrLit "my_verb_call", [])))
+    Assert.Equal(Some "property", entry |> Option.map (fun e -> e.TokenType))
+    Assert.Equal(Some [| "corponym" |], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
 let ``a property access classifies as property with no modifiers`` () =
     let entry = classify [] [] (refAt 1 1 3 (RefProp(Ident("this", 1, 1), StrLit "foo")))
     Assert.Equal(Some "property", entry |> Option.map (fun e -> e.TokenType))

@@ -98,29 +98,6 @@ let private monaco: obj = importAll "monaco-editor"
 /// (it's what `constant.error` below reuses for `E_*` codes), reusing it for
 /// the inline catch-expression's own delimiters keeps that association
 /// consistent rather than introducing a third, unrelated color.
-///
-/// `$name(` (call-sugar for `#0:name(...)`, `Parser.fs`'s `TDollar` branch
-/// when a `(` follows directly) gets its own rule, tokenized as `method` -
-/// the *same* token the live semantic pass already uses for a resolved verb
-/// call, reusing its existing theme color rather than introducing a new
-/// one. Ordered before the general `\$[\w]+` "annotation" rule (Monarch
-/// tries rules top-down, first match wins) so it takes priority for this
-/// one shape. Without this, `$my_verb_call(...)` split into two colors:
-/// the Monarch grammar's plain `$[\w]+` rule swallows the *whole*
-/// `$my_verb_call` as one atomic reddish `annotation` span (there's no `:`
-/// to stop it early the way there is in `$string_utils:capitalize()`), but
-/// the live pass's own `RefVerbCall` reference only covers the name itself
-/// (never the receiver `#0`, which - unlike a `Prop` receiver - generates
-/// no live reference at all: `AstQuery.collectExpr`'s `ObjLit` case is a
-/// no-op), repainting just `my_verb_call` verb-call yellow and leaving `$`
-/// stuck red - the same "one logical `$name` reference in two colors" seam
-/// the property-token fix already fixed for the property-sugar case,
-/// confirmed live (user report) for this call-sugar case too. Semantically
-/// this is the right call regardless of the seam: `$foo(...)` *is* a verb
-/// dispatch through and through (the `$` is pure call syntax, not a
-/// reference to anything, unlike `$foo` used bare or as a receiver), so it
-/// should read as one continuous verb-call color, not partly like a
-/// corponym reference.
 let private moocodeLanguage: obj =
     emitJsExpr
         ()
@@ -158,7 +135,6 @@ let private moocodeLanguage: obj =
                     }
                 }],
                 [/#-?\d+/, 'annotation'],
-                [/\$[\w]+(?=\s*\()/, 'method'],
                 [/\$[\w]+/, 'annotation'],
                 [/\d+\.\d+([eE][-+]?\d+)?/, 'number.float'],
                 [/\d+/, 'number'],
@@ -303,6 +279,24 @@ let private moocodeLanguageConfiguration: obj =
 ///   whichever `property`/`property.corponym` rule applies once semantic
 ///   tokens load - it needs to keep matching the `$` sigil's own static
 ///   color, not fall into the new plain-property teal.
+///   `Handlers.classifySemanticToken`'s `RefVerbCall(ObjLit 0L, ...)` case
+///   (call-sugar, `$foo(args)`/an explicit `#0:foo(args)`) reuses this exact
+///   `property`/`corponym` classification too, by explicit request - not
+///   `method`. `$foo(args)` desugars to a real verb dispatch (`#0:foo(...)`),
+///   so `method`'s yellow would be the more "technically precise" choice,
+///   and an earlier version of this fix did exactly that (a dedicated
+///   Monarch rule coloring `$name(` as `method` to stop it splitting into
+///   two colors against the `#0` receiver, which - unlike a `Prop`
+///   receiver - generates no live reference at all:
+///   `AstQuery.collectExpr`'s `ObjLit` case is a no-op). Overridden to
+///   match `$string_utils`'s red instead: the user wants every `$name`
+///   reference to read as one consistent "this is $-prefixed" family
+///   regardless of whether it's a property read or a verb dispatch, rather
+///   than splitting by call-vs-property semantics. Since the receiver `#0`
+///   is already static-annotation-red and unaffected by any live token, the
+///   live pass just needs to paint the verb name the same red for the two
+///   passes to agree - no dedicated Monarch rule needed the way `method`
+///   would have required.
 let private moocodeTheme: obj =
     createObj
         [ "base" ==> "vs-dark"

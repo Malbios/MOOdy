@@ -1001,6 +1001,20 @@ let classifySemanticToken
         let isPreBound = (implicitVariableHelp name).IsSome || (typeConstantHelp name).IsSome || name = "true" || name = "false"
         entry "variable" (if isPreBound then [| "defaultLibrary" |] else [||])
     | AstQuery.RefCall(name, _) -> entry "function" (if Map.containsKey name liveBuiltins then [| "defaultLibrary" |] else [||])
+    // `$foo(args)` call-sugar and an explicit `#0:foo(args)` call both parse
+    // to the identical `VerbCall(ObjLit 0L, StrLit name, args, ...)` shape
+    // (Parser.fs's `TDollar` + immediate `(` branch uses the same `ObjLit
+    // 0L` a literal `#0` receiver would) - classified the same as a `$foo`
+    // property reference (the `corponym` modifier, below), by explicit
+    // request, rather than as a `method` call. `$foo(args)` is a real verb
+    // dispatch, so `method`'s yellow would be the more technically precise
+    // choice, but the user wants every `$name` reference - property-sugar
+    // or call-sugar - to read as one consistent family rather than
+    // splitting by call-vs-property semantics. This also means a call
+    // through this shape never carries the `unresolved` signal `method`
+    // otherwise would - same as a plain `$foo` property reference, which
+    // never checked resolution either.
+    | AstQuery.RefVerbCall(ObjLit 0L, StrLit _, _) -> entry "property" [| "corponym" |]
     | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
         match Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver with
         | Some startObj ->
