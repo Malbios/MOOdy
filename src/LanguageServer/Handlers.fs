@@ -1008,6 +1008,17 @@ let classifySemanticToken
             entry "method" (if resolved then [||] else [| "unresolved" |])
         | None -> entry "method" [| "unresolved" |]
     | AstQuery.RefVerbCall(_, _, _) -> None
+    // `$foo` property-sugar (receiver `#0`) gets the `corponym` modifier so
+    // `Monaco.fs`'s theme can keep it the same reddish `annotation` color the
+    // static Monarch grammar already gives the `$` sigil itself - plain
+    // `obj.foo` access (any other receiver) gets a different, unmodified
+    // `property` color instead. Before this, both rendered identically:
+    // confirmed live (user report) that `this.article` (an ordinary
+    // property read) was indistinguishable from `$string_utils` (a system-
+    // object corponym reference) - two semantically unrelated things sharing
+    // one color was a real regression from giving `property` any single
+    // fixed color at all (see that fix's own commit).
+    | AstQuery.RefProp(ObjLit 0L, StrLit _) -> entry "property" [| "corponym" |]
     | AstQuery.RefProp(_, StrLit _) -> entry "property" [||]
     | AstQuery.RefProp(_, _) -> None
 

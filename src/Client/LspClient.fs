@@ -561,7 +561,7 @@ let private toDisplayedPosition (lineMap: Sugar.LineMap option) (delta: int[] op
 /// why). Order matters - it's the index Monaco's own delta-encoded `data`
 /// array (`provideDocumentSemanticTokens` below) and `getLegend` both use.
 let private semanticTokenTypes = [| "variable"; "function"; "method"; "property" |]
-let private semanticTokenModifiers = [| "defaultLibrary"; "unresolved" |]
+let private semanticTokenModifiers = [| "defaultLibrary"; "unresolved"; "corponym" |]
 
 let private semanticTokenTypeIndex (t: string) : int =
     semanticTokenTypes |> Array.tryFindIndex ((=) t) |> Option.defaultValue 0

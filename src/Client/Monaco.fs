@@ -235,29 +235,50 @@ let private moocodeLanguageConfiguration: obj =
 ///   "less certain" visual idiom `style.css`'s `.inspector-row-inherited`
 ///   already uses elsewhere in this app, rather than a different color -
 ///   it's still definitely a verb call, just one this tooling can't fully
-///   vouch for. Deliberately not doing the equivalent for `function`
-///   without the `defaultLibrary` modifier (an unrecognized bare-name
-///   call) - unlike an unresolved verb dispatch, that can just as easily
-///   mean the live builtins cache is stale (see [[Combined refresh for LSP
-///   builtins and static graph]]) as it can mean a real compile error, and
-///   the real compile-time check (`set_verb_code`'s own error list) is
-///   already authoritative for that - a heuristic red/warning color here
-///   would just be a second, less trustworthy signal for the same thing.
-/// - `property` (`classifySemanticToken`'s token for any `RefProp` - both
-///   `$foo` property-sugar for `#0.foo` and plain `obj.foo` access) had the
-///   exact same invisibility gap as `method`/`function` above, confirmed
-///   live: `$string_utils:capitalize()` showed `$` in the Monarch grammar's
-///   own reddish `annotation` color (`CC6666`, below) but `string_utils`
-///   itself in the plain, unstyled default foreground, because the live
+///   vouch for.
+/// - `function.defaultLibrary` (a call the live builtins cache actually
+///   recognizes, e.g. `has_property()`) gets its own dusty pink/mauve
+///   (`B46695`) instead of inheriting plain `function`'s yellow - confirmed
+///   live (user report) that a real builtin call was indistinguishable from
+///   an ordinary verb call (`method`), even though the two are completely
+///   different kinds of dispatch. `B46695` is vs-dark's own `regexp` color
+///   (same "confirmed directly in the installed package's own theme table"
+///   sourcing every other color here uses) - picked over the more obvious
+///   "just reuse `constant.error`'s purple" because that purple (`C586C0`)
+///   is already claimed for error-literal styling, and putting a genuine
+///   builtin call in the same hue as `E_INVARG`/`E_PERM` would read as a
+///   warning where none exists. Deliberately not doing the equivalent for
+///   plain `function` without the modifier (an unrecognized bare-name call)
+///   - unlike an unresolved verb dispatch, that can just as easily mean the
+///   live builtins cache is stale (see [[Combined refresh for LSP builtins
+///   and static graph]]) as it can mean a real compile error, and the real
+///   compile-time check (`set_verb_code`'s own error list) is already
+///   authoritative for that - a heuristic color here would just be a
+///   second, less trustworthy signal for the same thing.
+/// - `property` (`classifySemanticToken`'s token for a plain `obj.foo`
+///   access) gets vs-dark's own teal `type` color (`3DC9B0`), picked
+///   specifically because it's unclaimed by anything else here and reads as
+///   clearly its own category rather than a shade of an existing one.
+///   `property` itself had the exact same invisibility gap `method`/
+///   `function` did before their own fixes - vs-dark defines no rule for
+///   it at all, so it silently fell back to plain body-text color.
+/// - `property.corponym` (`RefProp` whose receiver is `#0` - i.e. `$foo`
+///   property-sugar, not a real dot-access) keeps the Monarch grammar's own
+///   `annotation` red (`CC6666`) instead of `property`'s teal. Without this
+///   split, giving plain `property` *any* single color (an earlier version
+///   of this fix did exactly that, reusing `annotation`'s red for both)
+///   made `$string_utils` and an ordinary `this.article` read as the exact
+///   same color - confirmed live (user report) as a real regression: two
+///   semantically unrelated things (a system-object reference vs. a normal
+///   property read) had become visually identical. The underlying reason
+///   `$foo` needs its own live-pass rule at all (not just the static
+///   grammar's reddish `annotation` token) is the same as before: the live
 ///   pass's `RefProp` walk covers a `VerbCall`'s receiver sub-expression too
-///   (`AstQuery.collectExpr`'s `VerbCall` case recurses into `recvE`) and
-///   repaints it with no color at all once semantic tokens load - splitting
-///   one logical `$name` reference into two different colors depending on
-///   whether the static or live pass last touched each half. Reusing
-///   `annotation`'s own `CC6666` here (not a new color) keeps `$foo` a
-///   single consistent hue in both passes, and gives plain `obj.foo`
-///   property access a real color of its own for the first time too, rather
-///   than silently falling back to body text.
+///   (`AstQuery.collectExpr`'s `VerbCall` case recurses into `recvE`), so
+///   `$string_utils:capitalize()`'s `$string_utils` half gets repainted by
+///   whichever `property`/`property.corponym` rule applies once semantic
+///   tokens load - it needs to keep matching the `$` sigil's own static
+///   color, not fall into the new plain-property teal.
 let private moocodeTheme: obj =
     createObj
         [ "base" ==> "vs-dark"
@@ -267,9 +288,11 @@ let private moocodeTheme: obj =
                createObj [ "token" ==> "variable"; "foreground" ==> "9CDCFE" ]
                createObj [ "token" ==> "variable.defaultLibrary"; "foreground" ==> "4864AA" ]
                createObj [ "token" ==> "function"; "foreground" ==> "DCDCAA" ]
+               createObj [ "token" ==> "function.defaultLibrary"; "foreground" ==> "B46695" ]
                createObj [ "token" ==> "method"; "foreground" ==> "DCDCAA" ]
                createObj [ "token" ==> "method.unresolved"; "foreground" ==> "DCDCAA"; "fontStyle" ==> "italic" ]
-               createObj [ "token" ==> "property"; "foreground" ==> "CC6666" ] |]
+               createObj [ "token" ==> "property"; "foreground" ==> "3DC9B0" ]
+               createObj [ "token" ==> "property.corponym"; "foreground" ==> "CC6666" ] |]
           "colors" ==> createObj [] ]
 
 /// Registers the "moocode" language and its theme with Monaco. Call once,

@@ -91,6 +91,13 @@ let ``a verb call with an unresolvable receiver classifies as method with the un
 let ``a property access classifies as property with no modifiers`` () =
     let entry = classify [] [] (refAt 1 1 3 (RefProp(Ident("this", 1, 1), StrLit "foo")))
     Assert.Equal(Some "property", entry |> Option.map (fun e -> e.TokenType))
+    Assert.Equal(Some[||], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
+let ``$foo property-sugar classifies as property with the corponym modifier`` () =
+    let entry = classify [] [] (refAt 1 2 12 (RefProp(ObjLit 0L, StrLit "string_utils")))
+    Assert.Equal(Some "property", entry |> Option.map (fun e -> e.TokenType))
+    Assert.Equal(Some [| "corponym" |], entry |> Option.map (fun e -> e.TokenModifiers))
 
 [<Fact>]
 let ``a computed property name has nothing to classify`` () =
