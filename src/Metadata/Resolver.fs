@@ -228,3 +228,20 @@ let findAllDefiningObjects (graph: Graph) (verbName: string) : (ObjRef * VerbNod
     |> Seq.collect (fun (num, o) -> o.Verbs |> Seq.map (fun v -> num, v))
     |> Seq.filter (fun (_, v) -> isExecutable v.Meta && verbNameMatchesAny v.Meta.Names verbName)
     |> List.ofSeq
+
+/// `resolveReceiverInContext`, falling back to `findAllDefiningObjects`'s
+/// single-candidate heuristic when the receiver itself can't be statically
+/// resolved (a local variable, `player`, a computed expression, ...) - the
+/// same "only one object defines a matching verb" confidence hover already
+/// reports in that case, now shared so go-to-definition and semantic-token
+/// resolution agree with what hover says instead of always treating such a
+/// call as fully unresolved. Two or zero candidates stay genuinely
+/// unresolved - no sound default exists there, matching
+/// `findAllDefiningObjects`'s own doc comment.
+let resolveReceiverOrSingleCandidate (graph: Graph) (currentObj: ObjRef) (receiver: Expr) (verbName: string) : ObjRef option =
+    match resolveReceiverInContext graph currentObj receiver with
+    | Some startObj -> Some startObj
+    | None ->
+        match findAllDefiningObjects graph verbName with
+        | [ (definer, _) ] -> Some definer
+        | _ -> None

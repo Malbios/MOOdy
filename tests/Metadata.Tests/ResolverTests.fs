@@ -289,6 +289,32 @@ let ``findAllDefiningObjects excludes non-executable verbs and unrelated names``
     Assert.Empty(findAllDefiningObjects graph "tell")
     Assert.Empty(findAllDefiningObjects graph "nonexistent")
 
+// --- resolveReceiverOrSingleCandidate ---------------------------------------
+
+[<Fact>]
+let ``resolveReceiverOrSingleCandidate: prefers static resolution when it already succeeds`` () =
+    let a = objNode 1L [] [ verbNode (verbMeta 1 "tell" "rxd") ]
+    let graph = graphOf [ a ]
+    Assert.Equal(Some 123L, resolveReceiverOrSingleCandidate graph 1L (ObjLit 123L) "tell")
+
+[<Fact>]
+let ``resolveReceiverOrSingleCandidate: falls back to the single candidate when the receiver isn't statically known`` () =
+    let a = objNode 1L [] [ verbNode (verbMeta 1 "tell" "rxd") ]
+    let graph = graphOf [ a ]
+    Assert.Equal(Some 1L, resolveReceiverOrSingleCandidate graph 99L (Ident("player", 1, 1)) "tell")
+
+[<Fact>]
+let ``resolveReceiverOrSingleCandidate: stays unresolved when no object defines the verb`` () =
+    let graph = graphOf []
+    Assert.True((resolveReceiverOrSingleCandidate graph 99L (Ident("player", 1, 1)) "tell").IsNone)
+
+[<Fact>]
+let ``resolveReceiverOrSingleCandidate: stays unresolved when the verb is genuinely ambiguous`` () =
+    let a = objNode 1L [] [ verbNode (verbMeta 1 "tell" "rxd") ]
+    let b = objNode 2L [] [ verbNode (verbMeta 1 "tell" "rxd") ]
+    let graph = graphOf [ a; b ]
+    Assert.True((resolveReceiverOrSingleCandidate graph 99L (Ident("player", 1, 1)) "tell").IsNone)
+
 // --- allCallableVerbNames --------------------------------------------------
 
 [<Fact>]

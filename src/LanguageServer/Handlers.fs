@@ -187,11 +187,14 @@ let private verbAtUri (graph: Graph) (uri: string) : (ObjRef * VerbNode) option 
         |> Option.map (fun v -> objRef, v))
 
 /// The `VerbCall` under the cursor, if the position lands on one and its
-/// receiver resolves to a real object - the one reference shape this
-/// phase's resolver can actually answer. `enclosingObj` (the object the
-/// verb being viewed is defined on) lets a bare `this` receiver resolve too,
-/// via `resolveReceiverInContext` - see that function's own comment for why
-/// that's sound.
+/// receiver resolves to a real object - either statically (`enclosingObj`,
+/// the object the verb being viewed is defined on, lets a bare `this`
+/// receiver resolve too, via `resolveReceiverInContext` - see that
+/// function's own comment for why that's sound) or, failing that, via
+/// `resolveReceiverOrSingleCandidate`'s single-candidate fallback (the same
+/// "only one object defines a matching verb" heuristic hover already uses)
+/// - so go-to-definition agrees with what hover reports instead of always
+/// giving up when the receiver isn't statically known.
 let private resolvableVerbCallAt
     (graph: Graph)
     (enclosingObj: ObjRef)
@@ -202,7 +205,7 @@ let private resolvableVerbCallAt
     // LSP positions are 0-based; AST positions (from Lexer.fs) are 1-based.
     match AstQuery.referenceAt (lspLine + 1) (lspCol + 1) stmts with
     | Some { Ref = AstQuery.RefVerbCall(receiver, StrLit verbName, args) } ->
-        Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver
+        Metadata.Resolver.resolveReceiverOrSingleCandidate graph enclosingObj receiver verbName
         |> Option.map (fun startObj -> startObj, verbName, args)
     | _ -> None
 
@@ -1016,7 +1019,7 @@ let classifySemanticToken
     // never checked resolution either.
     | AstQuery.RefVerbCall(ObjLit 0L, StrLit _, _) -> entry "property" [| "corponym" |]
     | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
-        match Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver with
+        match Metadata.Resolver.resolveReceiverOrSingleCandidate graph enclosingObj receiver verbName with
         | Some startObj ->
             let resolved = resolvedVerbCalls |> Map.tryFind (startObj, verbName) |> Option.defaultValue false
             entry "method" (if resolved then [||] else [| "unresolved" |])
@@ -1057,7 +1060,7 @@ let computeSemanticTokens
             |> List.choose (fun r ->
                 match r.Ref with
                 | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
-                    Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver
+                    Metadata.Resolver.resolveReceiverOrSingleCandidate graph enclosingObj receiver verbName
                     |> Option.map (fun startObj -> startObj, verbName)
                 | _ -> None)
             |> List.distinct
@@ -1637,35 +1640,19 @@ let inferredVerbSummary (stmts: Stmt list) : string option =
     else
         Some(sprintf "**Inferred:**\n%s" (lines |> List.map (sprintf "- %s") |> String.concat "\n"))
 
-/// A bare string-literal statement as the very first thing in a verb body
-/// (`"Does a thing.";`) - a MOOcode "docstring" idiom, the supplementary
-/// half of the self-documenting-code hover feature. Deliberately NOT a
-/// `/* ... */` block comment: confirmed live that `verb_code()` reconstructs
-/// source from the *compiled* verb program, and comments are discarded by
-/// the lexer before the parser (and therefore the compiled program) ever
-/// sees them - a real block comment can never survive a save/re-fetch round
-/// trip. A bare string-literal expression statement, by contrast, is a
-/// genuine (if inert) AST node, so it round-trips through `set_verb_code()`/
-/// `verb_code()` exactly like any other statement. Deliberately not
-/// `private`, same reasoning as `inferredVerbSummary` above - unit tests
-/// call this directly.
-let leadingDocString (stmts: Stmt list) : string option =
-    match stmts with
-    | ExprStmt(StrLit s) :: _ when s <> "" -> Some s
-    | _ -> None
-
 /// Hover body for a `VerbCall` resolved via `SidecarBridge.ResolveVerbDispatch`
 /// - the live equivalent of the old `hoverForResolvedVerb`, which took a
 /// static-graph `VerbNode` this project no longer builds for the resolved
 /// verb (see `Handlers.MooLspServer`'s `TextDocumentHover`/`TextDocumentDefinition`).
 /// Also lexes/parses `result.Code` (fetched live alongside the rest of this
 /// record, see `SidecarBridge.VerbDispatchResult.Code`) to append an
-/// auto-inferred summary plus any leading docstring statement - the
-/// "self-documenting code" hover feature, extending the same treatment
-/// `builtinHoverText` already gives builtins to user-authored verbs.
-/// Degrades cleanly to just the metadata above (no extra section at all)
-/// when `Code` is empty or fails to lex - never an error, matching every
-/// other graceful miss in this dispatcher.
+/// auto-inferred summary plus the leading doc-comment run (`leadingDocComment`,
+/// above - the same convention-aware parser the MOOcode docs panel already
+/// uses, not a separate weaker one) - the "self-documenting code" hover
+/// feature, extending the same treatment `builtinHoverText` already gives
+/// builtins to user-authored verbs. Degrades cleanly to just the metadata
+/// above (no extra section at all) when `Code` is empty or fails to lex -
+/// never an error, matching every other graceful miss in this dispatcher.
 let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.VerbDispatchResult) : Hover =
     let baseText =
         sprintf
@@ -1692,7 +1679,7 @@ let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.V
                 let stmts = Language.Parser.parse lexResult.Tokens
 
                 [ inferredVerbSummary stmts
-                  leadingDocString stmts |> Option.map (sprintf "**Comment:**\n%s") ]
+                  leadingDocComment stmts |> Option.map (sprintf "**Comment:**\n%s") ]
                 |> List.choose id
 
     (baseText :: extraSections) |> String.concat "\n\n" |> mkHover
@@ -2207,7 +2194,7 @@ type MooLspServer(_client: MooLspClient, getGraph: unit -> Graph, bridge: Sideca
                     async {
                         match r.Ref with
                         | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
-                            match Metadata.Resolver.resolveReceiverInContext graph enclosingObj receiver with
+                            match Metadata.Resolver.resolveReceiverOrSingleCandidate graph enclosingObj receiver verbName with
                             | Some startObj ->
                                 let! resolved = bridge.ResolveVerbDispatch startObj verbName |> Async.AwaitTask
 

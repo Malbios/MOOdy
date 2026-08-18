@@ -27,6 +27,51 @@ let private classify
     : SemanticTokenEntry option =
     classifySemanticToken (graphOf []) 1L (Map.ofList liveBuiltins) (Map.ofList resolvedVerbCalls) r
 
+// Fixture helpers for the single-candidate-fallback test below, mirroring
+// `MoocodeDocsTests.fs`'s own local object/verb builders - `graphOf` above
+// always hardcodes `Objects = Map.empty`, which can't exercise
+// `findAllDefiningObjects`'s corpus-wide scan.
+let private verbMeta (index: int) (name: string) : VerbMeta =
+    { Index = index
+      Names = [ name ]
+      Owner = 2L
+      Perms = "rxd"
+      Dobj = "this"
+      Prep = "none"
+      Iobj = "this" }
+
+let private verbNode (definedOn: ObjRef) (meta: VerbMeta) : VerbNode =
+    { Meta = meta
+      DefinedOn = definedOn
+      SourcePath = None
+      Ast = None
+      DiagnosticCount = 0
+      Tokens = None }
+
+let private objNode (num: ObjRef) (verbs: VerbNode list) : ObjectNode =
+    { Num = num
+      Name = None
+      LiveName = None
+      Parents = []
+      Children = []
+      Verbs = verbs
+      Owner = None
+      Flags = None
+      Properties = []
+      Aliases = [] }
+
+let private graphWithObjects (objects: ObjectNode list) : Graph =
+    { Objects = objects |> List.map (fun o -> o.Num, o) |> Map.ofList
+      SystemObjectProperties = Map.empty
+      Builtins = Map.empty }
+
+let private classifyWithGraph
+    (graph: Graph)
+    (resolvedVerbCalls: ((ObjRef * string) * bool) list)
+    (r: FoundReference)
+    : SemanticTokenEntry option =
+    classifySemanticToken graph 1L Map.empty (Map.ofList resolvedVerbCalls) r
+
 let private fn (name: string) : BuiltinFunc =
     { Name = name
       MinArgs = 0
@@ -85,6 +130,19 @@ let ``a verb call whose resolution failed classifies as method with the unresolv
 let ``a verb call with an unresolvable receiver classifies as method with the unresolved modifier`` () =
     let entry = classify [] [] (refAt 1 1 6 (RefVerbCall(Ident("player", 1, 1), StrLit "tell", [])))
     Assert.Equal(Some "method", entry |> Option.map (fun e -> e.TokenType))
+    Assert.Equal(Some [| "unresolved" |], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
+let ``a verb call with an unresolvable receiver but exactly one object defining the verb classifies as resolved`` () =
+    let graph = graphWithObjects [ objNode 1L [ verbNode 1L (verbMeta 1 "name") ] ]
+    let entry = classifyWithGraph graph [ (1L, "name"), true ] (refAt 1 1 4 (RefVerbCall(Ident("o", 1, 1), StrLit "name", [])))
+    Assert.Equal(Some "method", entry |> Option.map (fun e -> e.TokenType))
+    Assert.Equal(Some[||], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
+let ``a verb call with an unresolvable receiver and genuinely ambiguous candidates stays unresolved`` () =
+    let graph = graphWithObjects [ objNode 1L [ verbNode 1L (verbMeta 1 "name") ]; objNode 2L [ verbNode 2L (verbMeta 1 "name") ] ]
+    let entry = classifyWithGraph graph [] (refAt 1 1 4 (RefVerbCall(Ident("o", 1, 1), StrLit "name", [])))
     Assert.Equal(Some [| "unresolved" |], entry |> Option.map (fun e -> e.TokenModifiers))
 
 [<Fact>]

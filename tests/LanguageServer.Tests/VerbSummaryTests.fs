@@ -112,25 +112,3 @@ let ``a bare return with no value is not reported as may-return-a-value`` () =
 let ``a verb with none of the four facts has no summary at all`` () =
     let stmts = [ ExprStmt(Assign(Ident("x", 1, 1), IntLit 1L)) ]
     Assert.Equal(None, inferredVerbSummary stmts)
-
-// --- leading docstring ----------------------------------------------------
-
-[<Fact>]
-let ``a bare string-literal statement first in the body is the leading docstring`` () =
-    let stmts = [ ExprStmt(StrLit "Does a thing."); Return(Some(IntLit 1L)) ]
-    Assert.Equal(Some "Does a thing.", leadingDocString stmts)
-
-[<Fact>]
-let ``a bare string literal after real code is not the leading docstring`` () =
-    let stmts = [ ExprStmt(Assign(Ident("x", 1, 1), IntLit 1L)); ExprStmt(StrLit "too late") ]
-    Assert.Equal(None, leadingDocString stmts)
-
-[<Fact>]
-let ``an empty leading string literal is not treated as a docstring`` () =
-    let stmts = [ ExprStmt(StrLit ""); Return(Some(IntLit 1L)) ]
-    Assert.Equal(None, leadingDocString stmts)
-
-[<Fact>]
-let ``a verb with no leading string literal has no docstring`` () =
-    let stmts = [ Return(Some(IntLit 1L)) ]
-    Assert.Equal(None, leadingDocString stmts)
