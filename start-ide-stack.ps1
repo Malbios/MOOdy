@@ -24,6 +24,26 @@
       `LanguageServer -> Metadata -> Language` ProjectReference resolution breaks if
       BaseIntermediateOutputPath is also isolated, so `obj/` deliberately stays shared - that's
       exactly the directory a concurrent, unsynchronized `dotnet build` could corrupt).
+    - **Both `dotnet build` calls below pass `-t:Rebuild`, not a plain incremental build.**
+      Confirmed live (2026-08-18): a plain `dotnet build --property:OutputPath=bin\ide-stack\`
+      can report "Build succeeded, 0 errors" while silently leaving the *existing* file at that
+      path completely untouched - MSBuild's incremental up-to-date check is keyed off the shared
+      `obj/` cache (source vs. obj), not off "does obj's current content actually match what's
+      sitting in bin\ide-stack\ right now" - so once *any* unrelated build (a plain `dotnet build`
+      with no OutputPath override, `dotnet test`, an IDE background compile) has already brought
+      the shared obj/ cache up to date for the current source, a later `--property:OutputPath=...`
+      build sees "nothing to do" and skips the copy step entirely, leaving a stale binary at that
+      OutputPath indefinitely - exactly what silently defeated a real fix (the corponym
+      multi-alias export bug) for a full day of real use before being caught. `-t:Rebuild` forces
+      a genuine recompile+copy every time regardless of that shortcut, confirmed live to still
+      correctly resolve `LanguageServer -> Metadata -> Language` afterward (unlike isolating
+      `BaseIntermediateOutputPath`, which is the one thing confirmed to actually break that
+      resolution - `-t:Rebuild` never touches where `obj/` lives, only forces it to be rebuilt).
+      The one remaining way this build step can still fail is a genuinely different case, not
+      silent: if another still-running instance (started before this source changed) has the
+      exact same `bin\ide-stack\*.exe` open, MSBuild's copy step fails loudly with a real,
+      non-zero-exit file-lock error - the fix there is to stop that other instance first (Ctrl+C
+      in its own terminal), not to change anything here; see the build step's own error message.
     - The Vite BUILD output is different - `VITE_SIDECAR_WS_URL`/`VITE_LSP_WS_URL`/
       `VITE_DATABASE_NAME` are baked into the bundle at `vite build` time via
       `import.meta.env` (confirmed in App.fs), so two instances pointed at different MOO
@@ -267,12 +287,12 @@ $buildMutex = New-Object System.Threading.Mutex($false, 'Global\MoodyIdeStackBui
 $buildMutex.WaitOne() | Out-Null
 try {
     Write-Host "Building Sidecar..."
-    dotnet build $sidecarProj "--property:OutputPath=$sidecarOutDir\" -v quiet
-    if ($LASTEXITCODE -ne 0) { throw "Sidecar build failed." }
+    dotnet build $sidecarProj "--property:OutputPath=$sidecarOutDir\" -t:Rebuild -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "Sidecar build failed - if this is a file-in-use/copy error, another still-running ide-stack instance (started before your latest source change) has $sidecarExe open; stop it (Ctrl+C in its own terminal) and re-run this script." }
 
     Write-Host "Building LanguageServer..."
-    dotnet build $lspProj "--property:OutputPath=$lspOutDir\" -v quiet
-    if ($LASTEXITCODE -ne 0) { throw "LanguageServer build failed." }
+    dotnet build $lspProj "--property:OutputPath=$lspOutDir\" -t:Rebuild -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "LanguageServer build failed - if this is a file-in-use/copy error, another still-running ide-stack instance (started before your latest source change) has $lspExe open; stop it (Ctrl+C in its own terminal) and re-run this script." }
 
     Write-Host "Compiling Client (Fable)..."
     Push-Location $clientDir

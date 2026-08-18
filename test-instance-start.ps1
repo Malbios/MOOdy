@@ -182,12 +182,25 @@ Wait-ForPort -WaitPort $Port -Name 'MOO test instance'
 # this breaks `LanguageServer -> Metadata -> Language` `ProjectReference`
 # resolution (confirmed live: "namespace or module 'Language' is not
 # defined").
+#
+# `-t:Rebuild`, not a plain incremental build - confirmed live (2026-08-14,
+# again 2026-08-18) that a plain `dotnet build --property:OutputPath=...` can
+# report "Build succeeded, 0 errors" while silently leaving the file already
+# at that path untouched: MSBuild's incremental up-to-date check is keyed off
+# the shared `obj/` cache (source vs. obj), not "does obj's current content
+# match what's sitting at this specific OutputPath right now" - so once any
+# unrelated build already brought the shared obj/ cache up to date for the
+# current source (a plain `dotnet build` with no OutputPath override,
+# `dotnet test`, an IDE background compile), this step sees "nothing to do"
+# and skips the copy, leaving a stale binary here indefinitely. `-t:Rebuild`
+# forces a real recompile+copy every time without touching where `obj/`
+# lives, so it doesn't reintroduce the `ProjectReference` breakage above.
 Write-Host "Building Sidecar..."
-dotnet build $sidecarProj "--property:OutputPath=$sidecarOutDir\" -v quiet
+dotnet build $sidecarProj "--property:OutputPath=$sidecarOutDir\" -t:Rebuild -v quiet
 if ($LASTEXITCODE -ne 0) { throw "Sidecar build failed." }
 
 Write-Host "Building LanguageServer..."
-dotnet build $lspProj "--property:OutputPath=$lspOutDir\" -v quiet
+dotnet build $lspProj "--property:OutputPath=$lspOutDir\" -t:Rebuild -v quiet
 if ($LASTEXITCODE -ne 0) { throw "LanguageServer build failed." }
 
 # --- Scratch content tree, fresh every run -------------------------------------
