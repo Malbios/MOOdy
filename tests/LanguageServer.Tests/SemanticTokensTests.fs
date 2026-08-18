@@ -122,9 +122,15 @@ let ``a resolved verb call classifies as method with no modifiers`` () =
     Assert.Equal(Some[||], entry |> Option.map (fun e -> e.TokenModifiers))
 
 [<Fact>]
-let ``a verb call whose resolution failed classifies as method with the unresolved modifier`` () =
+let ``a verb call with a known starting object but confirmed-failed dispatch classifies as method with the broken modifier`` () =
     let entry = classify [] [ (2L, "target"), false ] (refAt 1 1 6 (RefVerbCall(ObjLit 2L, StrLit "target", [])))
-    Assert.Equal(Some [| "unresolved" |], entry |> Option.map (fun e -> e.TokenModifiers))
+    Assert.Equal(Some [| "broken" |], entry |> Option.map (fun e -> e.TokenModifiers))
+
+[<Fact>]
+let ``a single-candidate verb call with confirmed-failed dispatch also classifies as broken, not unresolved`` () =
+    let graph = graphWithObjects [ objNode 1L [ verbNode 1L (verbMeta 1 "name") ] ]
+    let entry = classifyWithGraph graph [ (1L, "name"), false ] (refAt 1 1 4 (RefVerbCall(Ident("o", 1, 1), StrLit "name", [])))
+    Assert.Equal(Some [| "broken" |], entry |> Option.map (fun e -> e.TokenModifiers))
 
 [<Fact>]
 let ``a verb call with an unresolvable receiver classifies as method with the unresolved modifier`` () =

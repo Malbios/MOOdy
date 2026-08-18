@@ -1021,8 +1021,16 @@ let classifySemanticToken
     | AstQuery.RefVerbCall(receiver, StrLit verbName, _) ->
         match Metadata.Resolver.resolveReceiverOrSingleCandidate graph enclosingObj receiver verbName with
         | Some startObj ->
+            // A known starting object with dispatch confirmed to fail
+            // (`resolvedVerbCalls` says false) is a genuinely-confirmed
+            // problem - this exact call raises E_VERBNF at runtime, not
+            // just "couldn't be verified" - so it gets `broken`, not
+            // `unresolved`. The `None` branch below is the opposite: no
+            // starting object at all (a computed receiver, or a verb name
+            // with zero/multiple candidates), which says nothing about
+            // whether the call actually works - stays `unresolved`.
             let resolved = resolvedVerbCalls |> Map.tryFind (startObj, verbName) |> Option.defaultValue false
-            entry "method" (if resolved then [||] else [| "unresolved" |])
+            entry "method" (if resolved then [||] else [| "broken" |])
         | None -> entry "method" [| "unresolved" |]
     | AstQuery.RefVerbCall(_, _, _) -> None
     // `$foo` property-sugar (receiver `#0`) gets the `corponym` modifier so

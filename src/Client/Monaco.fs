@@ -236,6 +236,15 @@ let private moocodeLanguageConfiguration: obj =
 ///   already uses elsewhere in this app, rather than a different color -
 ///   it's still definitely a verb call, just one this tooling can't fully
 ///   vouch for.
+/// - `method.broken` (a verb call whose starting object *is* known, but
+///   live dispatch from it confirmed no callable verb - this exact call
+///   raises E_VERBNF at runtime) gets `F14C4C`, this installed package's
+///   own `editorError.foreground` dark-theme color
+///   (`platform/theme/common/colors/editorColors.js`) - the real "this is
+///   wrong" red, distinct from `unresolved`'s softer "can't tell" italic
+///   yellow. Confirmed live (user report) that a confirmed-failed dispatch
+///   rendered identically to a merely-unverifiable one; the two are not
+///   the same confidence level and shouldn't look the same.
 /// - `function.defaultLibrary` (a call the live builtins cache actually
 ///   recognizes, e.g. `has_property()`) gets its own dusty pink/mauve
 ///   (`B46695`) instead of inheriting plain `function`'s yellow - confirmed
@@ -309,6 +318,7 @@ let private moocodeTheme: obj =
                createObj [ "token" ==> "function.defaultLibrary"; "foreground" ==> "B46695" ]
                createObj [ "token" ==> "method"; "foreground" ==> "DCDCAA" ]
                createObj [ "token" ==> "method.unresolved"; "foreground" ==> "DCDCAA"; "fontStyle" ==> "italic" ]
+               createObj [ "token" ==> "method.broken"; "foreground" ==> "F14C4C" ]
                createObj [ "token" ==> "property"; "foreground" ==> "3DC9B0" ]
                createObj [ "token" ==> "property.corponym"; "foreground" ==> "CC6666" ] |]
           "colors" ==> createObj [] ]
