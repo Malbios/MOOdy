@@ -554,31 +554,35 @@ let registerShowHoverKeybinding (editor: IStandaloneCodeEditor) : unit =
             editor.getAction(showHoverActionId).runWithArgs (createObj [ "focus" ==> "noAutoFocus" ]) |> ignore)
     )
 
-/// Replaces every compile-error marker on `editor`'s current model with
-/// `lineErrors` (line number, message) - an empty list clears them. Owner
-/// string is just a namespace so this diagnostic source can't collide with
-/// another one setting markers on the same model; there's only one source
-/// today. `MarkerSeverity.Error = 8`, confirmed in editor.api.d.ts:90-95.
-/// Clamps the reported line to the model's actual last line - confirmed
-/// live (via the debounced live-diagnostics check, which reports on
-/// mid-edit, not-yet-saved text far more often than the old save-time-only
-/// check ever did) that MOO's own compile errors can name a line number
+/// Replaces every compile-diagnostic marker on `editor`'s current model
+/// with `lineErrors` (line number, message, isWarning) - an empty list
+/// clears them. Owner string is just a namespace so this diagnostic source
+/// can't collide with another one setting markers on the same model;
+/// there's only one source today. `isWarning` maps to
+/// `MarkerSeverity.Warning = 4` vs `MarkerSeverity.Error = 8` (both
+/// confirmed in editor.api.d.ts:90-95) - a non-blocking compiler warning
+/// (e.g. `if (x = 1)`, an intentional-sometimes assignment-as-condition)
+/// must not render the same as a real compile error. Clamps the reported
+/// line to the model's actual last line - confirmed live (via the
+/// debounced live-diagnostics check, which reports on mid-edit,
+/// not-yet-saved text far more often than the old save-time-only check
+/// ever did) that MOO's own compile diagnostics can name a line number
 /// past the end of a short/incomplete buffer (e.g. an unterminated
 /// statement on the buffer's only line reported as "Line 2"), and
 /// `getLineMaxColumn` throws outright for an out-of-range line - this
 /// would otherwise silently abort the whole marker update, not just that
 /// one marker.
-let setErrorMarkers (editor: IStandaloneCodeEditor) (lineErrors: (int * string) list) : unit =
+let setErrorMarkers (editor: IStandaloneCodeEditor) (lineErrors: (int * string * bool) list) : unit =
     let model = editor.getModel ()
     let lineCount = model.getLineCount ()
 
     let markers =
         lineErrors
-        |> List.map (fun (line, message) ->
+        |> List.map (fun (line, message, isWarning) ->
             let clampedLine = max 1 (min line lineCount)
 
             createObj
-                [ "severity" ==> 8
+                [ "severity" ==> (if isWarning then 4 else 8)
                   "message" ==> message
                   "startLineNumber" ==> clampedLine
                   "startColumn" ==> 1

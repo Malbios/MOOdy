@@ -56,6 +56,31 @@ let sendWire (webSocket: WebSocket) (header: string) (lines: string list) (ct: C
 let resolveVerbIndexStatements (o: string) (verbNameLiteral: string) : string =
     $"""vlist = verbs({o}); idx = 0; for i in [1..length(vlist)] if ({verbNameLiteral} in explode(vlist[i], " ")) idx = i; endif endfor"""
 
+/// True when a `set_verb_code()`/`.program` diagnostic string is a
+/// non-blocking compiler *warning* rather than a real compile error - both
+/// share one flat string list with no other distinguishing structure, but
+/// ToastStunt's fork (`parser.y`'s `warning()`, commit fcd9fab + its own
+/// follow-up marker change) now prefixes every warning's message body with
+/// `"Warning: "`, right after the existing `"Line N:  "` prefix. Mirrors
+/// `App.fs`'s own `parseErrorLine` parsing exactly, so client and sidecar
+/// agree on the same diagnostic shape.
+let isWarningDiagnostic (line: string) : bool =
+    if line.StartsWith("Line ") then
+        let colonIdx = line.IndexOf(':')
+        colonIdx > 5 && line.Substring(colonIdx + 1).TrimStart().StartsWith("Warning: ")
+    else
+        false
+
+/// True when `errs` contains at least one genuine compile error (as opposed
+/// to only warnings) - the condition every save path below uses to decide
+/// whether to skip the git commit and report the save as failed. A
+/// warning-only `errs` list must NOT trip this: the verb already compiled
+/// and was reprogrammed on the live object (ToastStunt's warning() doesn't
+/// increment `nerrors`), so treating it as a hard failure would silently
+/// leave the live edit uncommitted while reporting it to the user as
+/// unsaved.
+let hasRealError (errs: string list) : bool = errs |> List.exists (isWarningDiagnostic >> not)
+
 /// `ide_fetch(objRef, verbName)` replacement. `verb_code()` flags are
 /// pinned (`0, 1`) per `FORMAT.md` §4, not left to ToastStunt's implicit
 /// defaults.
@@ -301,7 +326,7 @@ let saveVerb
         let! json = evalOnSession session statements "errs" ct
         let errors = json.RootElement.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
 
-        if not errors.IsEmpty then
+        if hasRealError errors then
             do!
                 sendWire
                     webSocket
@@ -311,10 +336,14 @@ let saveVerb
         else
             // Best-effort: a failure here shouldn't undo a save that's
             // already live on the MOO - just report it to diagnostics
-            // rather than claiming the save itself failed.
+            // rather than claiming the save itself failed. `errors` here is
+            // guaranteed warnings-only (real errors took the branch above),
+            // so it's still worth surfacing alongside any git-commit note.
             let! gitError = exportAndCommitObject config session objRef verbName GitStore.Modified true ct
 
-            let diagnostics = gitError |> Option.map (fun m -> [ "(saved, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+            let diagnostics =
+                errors
+                @ (gitError |> Option.map (fun m -> [ "(saved, but git commit failed: " + m + ")" ]) |> Option.defaultValue [])
 
             do! sendWire webSocket (sprintf "moodev-edit-result object: #%d verb: %s ok: 1" objRef verbName) diagnostics ct
     }
@@ -431,24 +460,24 @@ let addVerb
 /// true definer (see the verb-row rendering in the client, which is
 /// itself correct, honest behavior, not the bug) - there was no way to
 /// split a child's behavior off from its ancestor's shared definition.
-let overrideVerb
-    (config: Config)
-    (session: Session)
-    (webSocket: WebSocket)
-    (childRef: int64)
-    (definerRef: int64)
-    (verbName: string)
-    (ct: CancellationToken)
-    : Task<unit> =
-    task {
-        let c = sprintf "#%d" childRef
-        let d = sprintf "#%d" definerRef
-        let verbLit = "\"" + verbName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+/// Builds `overrideVerb`'s eval statements - split out from the function
+/// itself for the same reason `buildCheckVerbSyntaxStatements` is (see its
+/// own comment): a unit test can assert the concatenated fragments still
+/// lex/parse cleanly, catching a spacing regression without a live MOO
+/// round trip. Only sets `errtext` for genuine structural failures (verb
+/// not found on the definer, the `add_verb` copy itself raising, or the
+/// override verb not showing up after `add_verb`) - the caller, not this
+/// MOO fragment, decides whether `set_verb_code`'s own `errs` list (always
+/// returned, never consumed here) contains a real compile error or just
+/// warnings, since only F# can tell the two apart (`hasRealError`).
+let buildOverrideVerbStatements (childRef: int64) (definerRef: int64) (verbName: string) : string =
+    let c = sprintf "#%d" childRef
+    let d = sprintf "#%d" definerRef
+    let verbLit = "\"" + verbName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
 
-        let statements =
-            resolveVerbIndexStatements d verbLit
-            + $"""
-ok = 0; errtext = "";
+    resolveVerbIndexStatements d verbLit
+    + $"""
+errtext = ""; errs = {{}};
 if (idx == 0)
   errtext = "verb not found on definer";
 else
@@ -463,23 +492,39 @@ else
   if (errtext == "")
     newvlist = verbs({c}); newidx = 0;
     for i in [1..length(newvlist)] if ({verbLit} in explode(newvlist[i], " ")) newidx = i; endif endfor
-    errs = (newidx == 0) ? {{"override verb not found after add"}} | set_verb_code({c}, newidx, vcode);
-    if (length(errs) > 0) errtext = errs[1]; else ok = 1; endif
+    if (newidx == 0)
+      errtext = "override verb not found after add";
+    else
+      errs = set_verb_code({c}, newidx, vcode);
+    endif
   endif
 endif"""
 
-        let! json = evalOnSession session statements """["ok" -> ok, "errtext" -> errtext]""" ct
+let overrideVerb
+    (config: Config)
+    (session: Session)
+    (webSocket: WebSocket)
+    (childRef: int64)
+    (definerRef: int64)
+    (verbName: string)
+    (ct: CancellationToken)
+    : Task<unit> =
+    task {
+        let statements = buildOverrideVerbStatements childRef definerRef verbName
+
+        let! json = evalOnSession session statements """["errtext" -> errtext, "errs" -> errs]""" ct
         let root = json.RootElement
-        let ok = root.GetProperty("ok").GetInt32() = 1
         let errtext = root.GetProperty("errtext").GetString()
+        let errs = root.GetProperty("errs").EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
+        let ok = errtext = "" && not (hasRealError errs)
 
         let! diagnostics =
             task {
                 if not ok then
-                    return [ errtext ]
+                    return if errtext <> "" then [ errtext ] else errs
                 else
                     let! gitError = exportAndCommitObject config session childRef verbName GitStore.Added true ct
-                    return gitError |> Option.map (fun m -> [ "(overridden, but git commit failed: " + m + ")" ]) |> Option.defaultValue []
+                    return errs @ (gitError |> Option.map (fun m -> [ "(overridden, but git commit failed: " + m + ")" ]) |> Option.defaultValue [])
             }
 
         do!
@@ -717,11 +762,12 @@ let renameVerb
                         let! errsJson = evalOnSession session saveStatements "errs" ct
                         let errs = errsJson.RootElement.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
 
-                        if errs.IsEmpty then
+                        if not errs.IsEmpty then
+                            siteFailures.Add(sprintf "#%d:%s - %s" siteObj siteVerb (String.concat "; " errs))
+
+                        if not (hasRealError errs) then
                             let! siteGitError = exportAndCommitObject config session siteObj siteVerb GitStore.Modified true ct
                             siteGitError |> Option.iter (fun m -> siteFailures.Add(sprintf "#%d:%s - saved, but git commit failed: %s" siteObj siteVerb m))
-                        else
-                            siteFailures.Add(sprintf "#%d:%s - %s" siteObj siteVerb (String.concat "; " errs))
 
             let diagnostics =
                 (renameGitError |> Option.map (fun m -> [ "(renamed, but git commit failed: " + m + ")" ]) |> Option.defaultValue [])
@@ -804,11 +850,12 @@ let bulkReplace
             let! errsJson = evalOnSession session saveStatements "errs" ct
             let errs = errsJson.RootElement.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
 
-            if errs.IsEmpty then
+            if not errs.IsEmpty then
+                failures.Add(sprintf "#%d:%s - %s" objRef verbName (String.concat "; " errs))
+
+            if not (hasRealError errs) then
                 let! gitError = exportAndCommitObject config session objRef verbName GitStore.Modified true ct
                 gitError |> Option.iter (fun m -> failures.Add(sprintf "#%d:%s - saved, but git commit failed: %s" objRef verbName m))
-            else
-                failures.Add(sprintf "#%d:%s - %s" objRef verbName (String.concat "; " errs))
 
         do! sendWire webSocket "moodev-bulk-replace-result ok: 1" (List.ofSeq failures) ct
     }

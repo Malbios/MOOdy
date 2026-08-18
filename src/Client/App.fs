@@ -1866,17 +1866,29 @@ let private scheduleGraphReload () : unit =
 
 let private isMcpMessage (data: obj) : bool = emitJsExpr data "typeof $0 === 'string'"
 
-/// Parses a "Line N:  message" compile-error string (set_verb_code()'s own
-/// format) into (line, message). Errors that don't match this shape (should
-/// not happen in practice, but not asserted) are just skipped for markers -
-/// they still show in the plain-text diagnostics area either way.
-let private parseErrorLine (line: string) : (int * string) option =
+/// Parses a "Line N:  message" compile-diagnostic string (set_verb_code()'s
+/// own format) into (line, message, isWarning). A message body starting
+/// with "Warning: " (ToastStunt's own marker for a non-blocking compiler
+/// warning, e.g. `if (x = 1)`'s assignment-as-condition lint) is stripped
+/// of that prefix and reported as a warning rather than an error - mirrors
+/// `Sidecar.IdeActions.isWarningDiagnostic` exactly, so client and sidecar
+/// agree on the same diagnostic shape. Diagnostics that don't match the
+/// "Line N:  " shape (should not happen in practice, but not asserted) are
+/// just skipped for markers - they still show in the plain-text
+/// diagnostics area either way.
+let private parseErrorLine (line: string) : (int * string * bool) option =
     if line.StartsWith("Line ") then
         let colonIdx = line.IndexOf(':')
 
         if colonIdx > 5 then
             match System.Int32.TryParse(line.Substring(5, colonIdx - 5)) with
-            | true, lineNum -> Some(lineNum, line.Substring(colonIdx + 1).TrimStart())
+            | true, lineNum ->
+                let rawMessage = line.Substring(colonIdx + 1).TrimStart()
+
+                if rawMessage.StartsWith("Warning: ") then
+                    Some(lineNum, rawMessage.Substring("Warning: ".Length), true)
+                else
+                    Some(lineNum, rawMessage, false)
             | false, _ -> None
         else
             None
@@ -1892,13 +1904,15 @@ let private parseErrorLine (line: string) : (int * string) option =
 /// `Sugar.nearestMappedSugarLine`. Passes the line through completely
 /// unchanged (today's existing behavior) when sugar mode is off or this tab
 /// has no map yet (fetch failed, or the verb didn't round-trip cleanly).
-let private remapDiagnosticLine (objRef: int64) (verbName: string) (lineNum: int, message: string) : int * string =
+/// `isWarning` passes through untouched either way - only the line number
+/// is sugar-remapped.
+let private remapDiagnosticLine (objRef: int64) (verbName: string) (lineNum: int, message: string, isWarning: bool) : int * string * bool =
     if not (Settings.sugarModeEnabled ()) then
-        lineNum, message
+        lineNum, message, isWarning
     else
         match Map.tryFind (objRef, verbName) tabSugarMaps with
-        | None -> lineNum, message
-        | Some map -> (Sugar.nearestMappedSugarLine map (lineNum - 1)) + 1, message
+        | None -> lineNum, message, isWarning
+        | Some map -> (Sugar.nearestMappedSugarLine map (lineNum - 1)) + 1, message, isWarning
 
 /// Case-insensitive substring match - an empty filter matches everything.
 let private matchesFilter (filterText: string) (label: string) : bool =
@@ -7130,14 +7144,20 @@ onWsMessage <-
                         // tab (its own earlier blur-triggered save) must not
                         // touch whatever's currently on screen.
                         if activeTab = VerbTab(objRef, verb) then
+                            // `ok` means "the save succeeded" - true even
+                            // with warnings-only diagnostics present (a
+                            // warning doesn't block the compile), so it
+                            // gates dirty-clearing only, never whether
+                            // `lines`/`lineErrors` (which may legitimately
+                            // be non-empty on success) get shown.
                             if ok then setDirty false
 
-                            editorDiagnosticsEl.textContent <- if ok then "" else String.concat "\n" lines
+                            editorDiagnosticsEl.textContent <- String.concat "\n" lines
 
                             let lineErrors =
                                 lines |> Array.toList |> List.choose parseErrorLine |> List.map (remapDiagnosticLine objRef verb)
 
-                            Monaco.setErrorMarkers editor (if ok then [] else lineErrors)
+                            Monaco.setErrorMarkers editor lineErrors
                     | false, _ -> ()
                 | _ -> ()
             elif header.StartsWith("moodev-verb-syntax-check-result") then

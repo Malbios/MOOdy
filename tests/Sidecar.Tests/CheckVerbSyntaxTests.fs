@@ -35,3 +35,11 @@ let ``buildCheckVerbSyntaxStatements handles empty candidate code`` () =
 [<Fact>]
 let ``buildCheckVerbSyntaxStatements escapes quotes and backslashes in candidate code`` () =
     assertParsesCleanly (buildCheckVerbSyntaxStatements [ """notify(player, "say \"hi\"");""" ])
+
+[<Fact>]
+let ``buildOverrideVerbStatements produces statements that lex and parse cleanly`` () =
+    assertParsesCleanly (buildOverrideVerbStatements 5L 4L "foo")
+
+[<Fact>]
+let ``buildOverrideVerbStatements escapes quotes and backslashes in the verb name`` () =
+    assertParsesCleanly (buildOverrideVerbStatements 5L 4L """say "hi"\backslash""")
