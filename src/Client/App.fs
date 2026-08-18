@@ -3543,21 +3543,16 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     inspectorPropertyStructuredToggles <- Map.empty
 
     // Whoever is connected on *this* session - shown in the "You" button's
-    // own label (e.g. "You (Wizard (#3))") and used as its actual quick-fill
+    // own label (e.g. "You (#3)" - just the objref, not the display name
+    // too, to keep the button short) and used as its actual quick-fill
     // value (a real resolved objref, not the bare "player" expression - it
     // used to send that literal keyword, but a resolved ref is what was
     // asked for).
-    let connectedPlayerDisplay: obj = info?connectedPlayerDisplay
-
     let connectedPlayerRef: int64 option =
         let raw: obj = info?connectedPlayerRef
         if isNullOrUndefined raw then None else Some(int64 (unbox<float> raw))
 
-    let youLabel =
-        if isNullOrUndefined connectedPlayerDisplay then
-            "You"
-        else
-            sprintf "You (%s)" (unbox<string> connectedPlayerDisplay)
+    let youLabel = connectedPlayerRef |> Option.map (sprintf "You (#%d)") |> Option.defaultValue "You"
 
     // Shared by every owner picker in this pane (property-add, verb-add,
     // header owner-edit) - "This object" is only offered when it wouldn't
