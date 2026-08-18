@@ -4895,6 +4895,12 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                       "prep" ==> prepInput.value.Trim()
                       "iobj" ==> iobjSelect.value ]
 
+    // Enter in the name field submits with whatever the rest of the form
+    // (owner, perms, arg spec) is currently set to - `addVerbBtn.click()`
+    // re-reads all of those fields fresh, so there's nothing extra to wire
+    // up. Same precedent as `corifyInput.onkeydown` elsewhere in this file.
+    addVerbNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addVerbBtn.click ()
+
     let mkVerbCell (child: HTMLElement) : HTMLElement =
         let td = document.createElement ("td")
         td.appendChild child |> ignore
