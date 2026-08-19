@@ -4406,9 +4406,12 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     addBtn.textContent <- "+"
     addBtn.title <- "Add property"
 
-    // Enter in the value field - the last field you'd naturally fill in -
-    // submits the row the same way clicking "+" does, instead of requiring
-    // a mouse trip to the button after typing everything.
+    // Enter in the name field submits with the currently selected
+    // perms/owner configuration, mirroring the new-verb widget's own
+    // name-field behavior. Enter in the value field - the last field
+    // you'd naturally fill in - does the same, instead of requiring a
+    // mouse trip to the button after typing everything.
+    addNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
     addValueInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
 
     addBtn.onclick <-
@@ -4601,7 +4604,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                     overrideSuffix.onclick <-
                         fun ev ->
                             ev.stopPropagation ()
-                            openOrSwitchToInspector ancestorRef
+                            openOrSwitchToVerb ancestorRef verbName
 
                     td.appendChild overrideSuffix |> ignore
                 | None -> ()
@@ -6167,6 +6170,31 @@ and private renderTreeRows (rows: TreeRow list) : unit =
             if isExpandable then
                 chevron.textContent <- (if Set.contains objRef expandedRefs then "▾" else "▸")
 
+            // The chevron is the only thing that expands/collapses - it
+            // stops the click from reaching `li.onclick` below, so toggling
+            // a node never also selects it/opens its inspector. A leaf row's
+            // chevron is empty and does nothing; its click still bubbles up
+            // to `li.onclick` so that dead space still selects the row.
+            chevron.onclick <-
+                fun ev ->
+                    if isExpandable then
+                        ev.stopPropagation ()
+
+                        let wasExpanded = Set.contains objRef expandedRefs
+
+                        expandedRefs <- if wasExpanded then Set.remove objRef expandedRefs else Set.add objRef expandedRefs
+                        saveExpandedRefs expandedRefs
+
+                        // Every expand asks live, unconditionally - there's no
+                        // reliable client-side signal for "this corponym'd
+                        // object might have live-only children" without
+                        // asking, and the response is a cheap no-op merge
+                        // when nothing new turns up.
+                        if not wasExpanded then
+                            sendAction [ "action" ==> "get-live-children"; "obj" ==> int objRef ]
+
+                        renderTree ()
+
             li.appendChild chevron |> ignore
 
             let kindIcon = document.createElement ("span")
@@ -6201,24 +6229,9 @@ and private renderTreeRows (rows: TreeRow list) : unit =
                     // Selects and loads this object's inspector - always
                     // fresh, and highlights the row immediately
                     // (`openOrSwitchToInspector` sets `selectedObjRef`
-                    // itself).
+                    // itself). Never touches expand state - only the
+                    // chevron's own handler above does that.
                     openOrSwitchToInspector objRef
-
-                    if isExpandable then
-                        let wasExpanded = Set.contains objRef expandedRefs
-
-                        expandedRefs <- if wasExpanded then Set.remove objRef expandedRefs else Set.add objRef expandedRefs
-                        saveExpandedRefs expandedRefs
-
-                        // Every expand asks live, unconditionally - there's no
-                        // reliable client-side signal for "this corponym'd
-                        // object might have live-only children" without
-                        // asking, and the response is a cheap no-op merge
-                        // when nothing new turns up.
-                        if not wasExpanded then
-                            sendAction [ "action" ==> "get-live-children"; "obj" ==> int objRef ]
-
-                    renderTree ()
 
             // Drag-to-reparent: dropping node A onto node B adds B as an
             // additional parent of A (never replaces A's existing parents -
