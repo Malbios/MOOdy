@@ -1694,7 +1694,12 @@ let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.V
             | Some _ -> None, None
             | None ->
                 let stmts = Language.Parser.parse lexResult.Tokens
-                leadingDocComment stmts, inferredVerbSummary stmts
+                // Markdown collapses a bare "\n" into whitespace - each doc-comment
+                // line needs a trailing hard break (two spaces + newline, same
+                // convention `metadataBlock` above already uses) to render on its
+                // own line rather than running into the next.
+                let commentSection = leadingDocComment stmts |> Option.map (fun text -> text.Replace("\n", "  \n"))
+                commentSection, inferredVerbSummary stmts
 
     [ Some titleLine; commentSection; Some metadataBlock; inferredSection ]
     |> List.choose id
