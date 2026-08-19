@@ -4604,7 +4604,7 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                     overrideSuffix.onclick <-
                         fun ev ->
                             ev.stopPropagation ()
-                            openOrSwitchToInspector ancestorRef
+                            openOrSwitchToVerb ancestorRef verbName
 
                     td.appendChild overrideSuffix |> ignore
                 | None -> ()
