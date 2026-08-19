@@ -4169,6 +4169,22 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
         input.classList.add "inspector-property-value"
         input.value <- "" // filled in once ide_get_properties responds
 
+        // An own row is draggable (for reordering, below), which hijacks a
+        // mouse-drag gesture started inside the input to select its text -
+        // browsers walk up from wherever the gesture started to the nearest
+        // `draggable="true"` ancestor regardless of the input's own
+        // `draggable` value, so setting that alone doesn't stop it
+        // (confirmed live: the ancestor row still won the gesture either
+        // way). Toggling the row's own `draggable` off for the duration of
+        // the gesture is what actually works - input elements implicitly
+        // capture the mouse for their own text selection, so `onmouseup`
+        // fires on the input even if the drag ends outside its bounds. Only
+        // wired for an own row - an inherited row is never draggable in the
+        // first place (see `if pIsOwn` below), so there's nothing to guard.
+        if pIsOwn then
+            input.onmousedown <- fun _ -> tr.setAttribute ("draggable", "false")
+            input.onmouseup <- fun _ -> tr.setAttribute ("draggable", "true")
+
         // Autosave-on-blur, mirroring the editor's own save-on-blur
         // (`saveIfDirty`) - only sends an update if the value actually
         // changed since it was last loaded/saved (see
