@@ -4674,14 +4674,14 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
                     mkPermsWidget
                         [ "Read", "r", "Other players' code can read this verb's source."
                           "Write", "w", "Other players' code can modify this verb's source."
-                          "Exec", "x", "Other players' code can call this verb."
+                          "Execute", "x", "Other players' code can call this verb."
                           "Debug",
                           "d",
                           "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed."
                           "Protected",
                           "p",
                           "Callable only by code whose own verb is defined on this object or a descendant of it - other callers see E_VERBNF, as if the verb didn't exist."
-                          "Private",
+                          "Private (hidden)",
                           "h",
                           "Callable only by code whose own verb is defined on this exact object - inheriting (without overriding) a private verb does not grant access to it." ]
                         vPerms
@@ -4874,14 +4874,14 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
         mkPermsWidget
             [ "Read", "r", "Other players' code can read this verb's source."
               "Write", "w", "Other players' code can modify this verb's source."
-              "Exec", "x", "Other players' code can call this verb."
+              "Execute", "x", "Other players' code can call this verb."
               "Debug",
               "d",
               "Runtime errors actually raise/propagate (recommended). Without this, errors are silently swallowed."
               "Protected",
               "p",
               "Callable only by code whose own verb is defined on this object or a descendant of it - other callers see E_VERBNF, as if the verb didn't exist."
-              "Private",
+              "Private (hidden)",
               "h",
               "Callable only by code whose own verb is defined on this exact object - inheriting (without overriding) a private verb does not grant access to it." ]
             "rxd"
