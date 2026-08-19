@@ -4406,9 +4406,12 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     addBtn.textContent <- "+"
     addBtn.title <- "Add property"
 
-    // Enter in the value field - the last field you'd naturally fill in -
-    // submits the row the same way clicking "+" does, instead of requiring
-    // a mouse trip to the button after typing everything.
+    // Enter in the name field submits with the currently selected
+    // perms/owner configuration, mirroring the new-verb widget's own
+    // name-field behavior. Enter in the value field - the last field
+    // you'd naturally fill in - does the same, instead of requiring a
+    // mouse trip to the button after typing everything.
+    addNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
     addValueInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
 
     addBtn.onclick <-
