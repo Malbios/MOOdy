@@ -1694,7 +1694,7 @@ let private hoverForResolvedVerbLive (verbName: string) (result: SidecarBridge.V
             | Some _ -> None, None
             | None ->
                 let stmts = Language.Parser.parse lexResult.Tokens
-                leadingDocComment stmts |> Option.map (sprintf "**Comment:**\n%s"), inferredVerbSummary stmts
+                leadingDocComment stmts, inferredVerbSummary stmts
 
     [ Some titleLine; commentSection; Some metadataBlock; inferredSection ]
     |> List.choose id
