@@ -307,14 +307,29 @@ let private locationOfVerbLive (result: SidecarBridge.VerbDispatchResult) : Loca
         { Start = { Line = 0u; Character = 0u }
           End = { Line = 0u; Character = 0u } } }
 
-/// Reverse of `Graph.SystemObjectProperties` (`$name` -> obj) - if a real
-/// object happens to be registered under more than one `$name`, this
-/// arbitrarily keeps one; rare enough in practice not to matter for a
-/// display label.
+/// Reverse of `Graph.SystemObjectProperties` (`$name` -> obj), picking one
+/// name per object when it's registered under more than one `$name` (a real,
+/// live case - confirmed live: MOO-World's #16 answers to both
+/// `$string_utils` and `$su`). Deterministic: alphabetically first, ordinal
+/// case-insensitive - the same rule `Sidecar/Exporter.fs`'s
+/// `canonicalNameByObjnumOf` already uses for this exact "which alias is
+/// *the* display name" problem (duplicated here rather than shared, per this
+/// file's existing per-project-duplication convention - see
+/// `displayNameFor`'s own doc comment). A naive `Map.ofSeq` over reversed
+/// pairs picks whichever name is alphabetically *last* instead (last-in-map
+/// wins on a duplicate key, and `Map.toSeq` already yields pairs in
+/// ascending-by-name order) - confirmed live: this flip-flopped the same
+/// object's displayed corponym between `$string_utils` and `$su` depending
+/// on which of this function or `canonicalNameByObjnumOf` computed a given
+/// label, tripping the "restored tab may point at a recycled/reused object"
+/// staleness warning for an object that was never actually recycled.
 let private corifiedNamesOf (graph: Graph) : Map<ObjRef, string> =
     graph.SystemObjectProperties
     |> Map.toSeq
     |> Seq.map (fun (name, objRef) -> objRef, name)
+    |> Seq.groupBy fst
+    |> Seq.map (fun (objRef, pairs) ->
+        objRef, pairs |> Seq.map snd |> Seq.sortWith (fun a b -> System.String.Compare(a, b, System.StringComparison.OrdinalIgnoreCase)) |> Seq.head)
     |> Map.ofSeq
 
 /// Full display label for an object number - the real (unsanitized) live
