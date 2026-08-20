@@ -1305,15 +1305,24 @@ let mutable private verbMetricsSortDescending: bool = true
 // for ordinary top-level bindings, unlike the `let rec ... and ...` chain
 // `renderTree`/`loadInspector`/etc. below belong to.
 //
-// No parent/name/flags prompt up front - creates a bare, parentless object
-// immediately (`$nothing`/`#-1`, the same "no parent" idiom
-// moocode-reference.md documents for `create()`) and lets the existing
-// `moodev-object-create-result` handler open it straight into the
-// inspector, where the user sets name/parent/flags via the exact same
+// No name/flags prompt up front - creates the object immediately and lets
+// the existing `moodev-object-create-result` handler open it straight into
+// the inspector, where the user sets name/flags via the exact same
 // affordances already used for every other object (rename pencil, flags
-// row, Parents "+").
+// row). Parent defaults to whatever's currently selected in the tree
+// (`selectedObjRef`, the same state `renderTreeRows` highlights) - a new
+// object created while browsing some part of the tree is far more often
+// meant as a child of what's on screen than a bare root object, and the
+// Parents "+" affordance is still right there to fix it up either way.
+// Bare parentless (`$nothing`/`#-1`, the same "no parent" idiom
+// moocode-reference.md documents for `create()`) only when nothing's
+// selected.
 treeNewObjectBtn.onclick <-
-    fun _ -> sendAction [ "action" ==> "create-object"; "parentExpr" ==> "#-1" ]
+    fun _ ->
+        let parentExpr =
+            selectedObjRef |> Option.map (sprintf "#%d") |> Option.defaultValue "#-1"
+
+        sendAction [ "action" ==> "create-object"; "parentExpr" ==> parentExpr ]
 
 /// Turns the editor's current content into the line array `IdeActions.saveVerb`
 /// expects for its JSON `code` field - converting sugared text back to real
