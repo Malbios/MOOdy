@@ -1675,6 +1675,14 @@ html, body {
   color: #fa4;
 }
 
+#status-stale-highlighting {
+  color: #e2a03f;
+}
+
+#status-stale-highlighting.hidden {
+  display: none;
+}
+
 #login-pane {
   display: flex;
   gap: 0.5em;

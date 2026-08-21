@@ -988,6 +988,15 @@ type SemanticTokenEntry =
       TokenType: string
       TokenModifiers: string[] }
 
+/// `GetSemanticTokens`'s wire response - `Stale = true` distinguishes "the
+/// static export disagreed with what the client actually fetched live, so
+/// `Tokens` is deliberately empty" from the ordinary, unrelated "nothing to
+/// show" cases (verb not in the graph at all, never parsed). The client uses
+/// this to tell the user *why* highlighting looks flatter than expected
+/// instead of leaving them to wonder - see `GetSemanticTokens`'s own doc
+/// comment for the full staleness story.
+type GetSemanticTokensResult = { Tokens: SemanticTokenEntry[]; Stale: bool }
+
 /// Pure classification of one reference into a semantic-token entry, given
 /// already-resolved facts (`liveBuiltins`, and `resolvedVerbCalls` - whether
 /// each `(startObj, verbName)` a `RefVerbCall` in this verb resolves to a
@@ -1156,16 +1165,30 @@ let private maxNestingDepth (stmts: Stmt list) : int =
     go stmts
 
 /// A verb's own line count, derived from its `Tokens` (cheaper than
-/// re-reading `SourcePath` off disk per verb) - the span from the first
-/// token's line to the last, inclusive. Used both by `computeVerbMetrics`'s
-/// own report and by `GetSemanticTokens`'s staleness guard, which needs the
+/// re-reading `SourcePath` off disk per verb) - the span from the first to
+/// the last *real* token's line, inclusive. `Language.Lexer.tokenize`
+/// unconditionally appends a trailing `TEOF` marker (confirmed in
+/// `Lexer.fs`), even for a genuinely empty body, so `Tokens` is never
+/// actually `[||]` in practice - dropping that one trailing sentinel first
+/// is what makes a real empty verb count as 0 lines instead of 1 (confirmed
+/// live: without this, `GetSemanticTokens`'s staleness guard below falsely
+/// flagged every brand-new/never-edited verb as stale, since the client's
+/// own live line count - `verb_code()`'s raw line list, with no synthetic
+/// EOF entry - correctly reports 0). Used both by `computeVerbMetrics`'s own
+/// report and by `GetSemanticTokens`'s staleness guard, which needs the
 /// exact same "how many lines is this verb, per what was last exported" fact
 /// to compare against what the client just fetched live.
 let verbLineCount (tokens: Language.Lexer.Token[]) : int =
-    if Array.isEmpty tokens then
+    let codeTokens =
+        if tokens.Length > 0 && tokens.[tokens.Length - 1].Kind = Language.Lexer.TEOF then
+            tokens.[.. tokens.Length - 2]
+        else
+            tokens
+
+    if Array.isEmpty codeTokens then
         0
     else
-        let lines = tokens |> Array.map (fun t -> t.Line)
+        let lines = codeTokens |> Array.map (fun t -> t.Line)
         Array.max lines - Array.min lines + 1
 
 /// Corpus-wide maintenance-hotspot report: every verb's own line count
@@ -2803,19 +2826,22 @@ type MooLspServer(_client: MooLspClient, getGraph: unit -> Graph, bridge: Sideca
     /// indentation - falling back to no tokens (plain Monarch coloring, a
     /// real but less rich fallback) is far better than tokens at the wrong
     /// positions.
-    member _.GetSemanticTokens(p: GetSemanticTokensParams) : Async<Result<SemanticTokenEntry[], JsonRpc.Error>> =
+    member _.GetSemanticTokens(p: GetSemanticTokensParams) : Async<Result<GetSemanticTokensResult, JsonRpc.Error>> =
         async {
+            let noTokens stale = Ok { Tokens = [||]; Stale = stale }
             let graph = getGraph ()
+
             match verbAtUri graph (moodevVerbUri p.ObjRef p.VerbName) with
-            | None -> return Ok [||]
+            | None -> return noTokens false
             | Some(enclosingObj, verb) ->
                 match verb.Ast, verb.Tokens with
-                | Some stmts, Some verbTokens when
-                    p.FetchedLineCount < 0 || p.FetchedLineCount = verbLineCount verbTokens
-                    ->
-                    let! tokens = computeSemanticTokens graph bridge enclosingObj stmts
-                    return Ok tokens
-                | _ -> return Ok [||]
+                | Some stmts, Some verbTokens ->
+                    if p.FetchedLineCount >= 0 && p.FetchedLineCount <> verbLineCount verbTokens then
+                        return noTokens true
+                    else
+                        let! tokens = computeSemanticTokens graph bridge enclosingObj stmts
+                        return Ok { Tokens = tokens; Stale = false }
+                | _ -> return noTokens false
         }
 
     /// Custom method (`moodev/findGotchas`, no params) - the "MOOcode

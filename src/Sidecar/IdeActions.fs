@@ -305,6 +305,24 @@ let private exportAndCommitObject
             return Some ex.Message
     }
 
+/// `moodev/resync-object` replacement (the "Refresh" button's own fix -
+/// see `LanguageServer.Handlers.GetSemanticTokens`'s doc comment for why a
+/// stale export exists at all): calls the exact same `exportAndCommitObject`
+/// every real edit already triggers as a side effect, but on demand, with no
+/// edit required - re-syncs `objRef`'s exported tree files from whatever's
+/// actually live on the MOO right now. Every other caller above passes a
+/// real change description (a verb/property name); `"resync"` here is
+/// exactly that, just describing "the user asked to re-sync" rather than an
+/// edit, so it reads sensibly in the git log the same way those do.
+let resyncObject (config: Config) (session: Session) (webSocket: WebSocket) (objRef: int64) (ct: CancellationToken) : Task<unit> =
+    task {
+        let! gitError = exportAndCommitObject config session objRef "resync" GitStore.Modified true ct
+
+        match gitError with
+        | None -> do! sendWire webSocket (sprintf "moodev-resync-object-result object: #%d ok: 1" objRef) [] ct
+        | Some msg -> do! sendWire webSocket (sprintf "moodev-resync-object-result object: #%d ok: 0" objRef) [ msg ] ct
+    }
+
 let saveVerb
     (config: Config)
     (session: Session)

@@ -115,6 +115,7 @@ let private editorMonacoEl = document.getElementById ("editor-monaco")
 let private editorDiagnosticsEl = document.getElementById ("editor-diagnostics")
 let private statusDirtyEl = document.getElementById ("status-dirty")
 let private statusPositionEl = document.getElementById ("status-position")
+let private statusStaleHighlightingEl = document.getElementById ("status-stale-highlighting")
 let private terminalPaneEl = document.getElementById ("terminal-pane")
 let private inspectorPaneEl = document.getElementById ("inspector-pane")
 let private inspectorContentEl = document.getElementById ("inspector-content")
@@ -1453,6 +1454,13 @@ let mutable private pendingSaveResolvers: Map<int64 * string, (bool -> unit) lis
 /// before doing anything else).
 let mutable private pendingReconfigureResolver: (bool * string -> unit) option = None
 
+/// The continuation waiting on the current `"resync-object"` request's
+/// `moodev-resync-object-result`, if one is in flight - same single-slot
+/// reasoning as `pendingReconfigureResolver` above (only one Refresh click
+/// can meaningfully be in flight at a time, and its own handler awaits this
+/// before doing anything else).
+let mutable private pendingResyncResolver: (bool -> unit) option = None
+
 /// Which verb needs saving and what its content was, captured at the exact
 /// moment of the edit that dirtied it (every `onDidChangeModelContent`
 /// firing, below) - not read later, on demand, by whatever eventually calls
@@ -1490,6 +1498,18 @@ let private setDirty (value: bool) : unit =
         dirtySave <- None
         syntaxCheckTimer |> Option.iter JS.clearTimeout
         syntaxCheckTimer <- None
+
+/// Toggles the "⚠ highlighting may be stale" status-bar note - set from
+/// `moodev/getSemanticTokens`'s own `Stale` flag (see
+/// `LanguageServer.Handlers.GetSemanticTokens`'s doc comment) whenever a
+/// response for the currently-displayed verb comes back with no tokens
+/// because its exported copy disagreed with what was actually fetched live,
+/// rather than leaving the flatter coloring unexplained.
+let private setHighlightingStale (stale: bool) : unit =
+    if stale then
+        statusStaleHighlightingEl.classList.remove "hidden"
+    else
+        statusStaleHighlightingEl.classList.add "hidden"
 
 /// Debounced (~800ms idle) as-you-type compile probe - coexists with
 /// (doesn't replace) the existing save-time check. Takes the exact
@@ -8269,6 +8289,12 @@ onWsMessage <-
                     let ok = headerField "ok: " header = Some "1"
                     resolve (ok, (if ok then "" else String.concat "\n" lines))
                 | None -> ()
+            elif header.StartsWith("moodev-resync-object-result") then
+                match pendingResyncResolver with
+                | Some resolve ->
+                    pendingResyncResolver <- None
+                    resolve (headerField "ok: " header = Some "1")
+                | None -> ()
             elif header.StartsWith("moodev-rename-result") then
                 if headerField "ok: " header = Some "1" then
                     if not (Array.isEmpty lines) then
@@ -8395,8 +8421,10 @@ let private refreshSemanticTokens =
         getIndentDeltaFor
         getLineMapFor
         getFetchedLineCountFor
+        setHighlightingStale
 
-let private refreshDocsDefaultTitle = "Refresh builtins, $-name resolution, and verb docs from the language server"
+let private refreshDocsDefaultTitle =
+    "Refresh builtins, $-name resolution, and verb docs from the language server - also re-syncs the currently open verb's object from the live MOO"
 
 // Combined refresh for everything the LanguageServer/client cache for their
 // own lifetime and never invalidate on their own: the live builtins cache
@@ -8422,6 +8450,23 @@ refreshDocsBtn.onclick <-
             refreshDocsBtn.setAttribute ("title", "Refreshing...")
 
             try
+                // Re-sync the currently-open verb's object from the live MOO
+                // first, if there is one - `reloadGraphAsync` below only
+                // ever re-reads whatever's already exported on disk (see
+                // `GraphStore.reload`'s own doc comment), so without this
+                // step, Refresh would keep silently re-parsing the same
+                // stale export it started with. Best-effort: a resync
+                // failure still lets the rest of this refresh proceed.
+                match activeTab with
+                | VerbTab(objRef, _) ->
+                    let! _ =
+                        Async.FromContinuations(fun (resolve, _, _) ->
+                            pendingResyncResolver <- Some resolve
+                            sendAction [ "action" ==> "resync-object"; "obj" ==> int objRef ])
+
+                    ()
+                | _ -> ()
+
                 do! LspClient.clearBuiltinsCacheAsync ()
                 do! LspClient.reloadGraphAsync (settingMooTreeDirEl.value.Trim())
                 moocodeDocsCache <- None

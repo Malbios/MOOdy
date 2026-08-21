@@ -430,6 +430,9 @@ let private buildTryDispatch
                     | "fetch-verb" ->
                         do! IdeActions.fetchVerb config session webSocket (getObj ()) (getStr "verb") ct
                         return true
+                    | "resync-object" ->
+                        do! IdeActions.resyncObject config session webSocket (getObj ()) ct
+                        return true
                     | "verb-at-parent" ->
                         do! IdeActions.verbAtParent session webSocket (getObj ()) (getStr "verb") ct
                         return true

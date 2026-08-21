@@ -628,6 +628,7 @@ let wire
     (getIndentDelta: int64 -> string -> int[] option)
     (getLineMap: int64 -> string -> Sugar.LineMap option)
     (getFetchedLineCount: int64 -> string -> int option)
+    (setHighlightingStale: bool -> unit)
     : (unit -> unit) =
     // Monaco can invoke a provider again before an earlier call's websocket
     // round-trip has come back - moving the mouse across a word re-fires
@@ -829,7 +830,8 @@ let wire
                 elif isNullOrUndefined result then
                     return noTokens ()
                 else
-                    let items: obj[] = unbox result
+                    setHighlightingStale (result?stale: bool)
+                    let items: obj[] = unbox result?tokens
 
                     let positioned =
                         items

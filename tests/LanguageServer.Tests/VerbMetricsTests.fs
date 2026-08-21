@@ -22,9 +22,14 @@ let private verbMeta (index: int) (name: string) : VerbMeta =
       Prep = "none"
       Iobj = "this" }
 
+/// Two ordinary (non-`TEOF`) tokens standing in for "a real token exists at
+/// this line" - `TSemicolon` specifically, not `TEOF`, since `verbLineCount`
+/// (see its own doc comment) deliberately drops a *trailing* `TEOF` before
+/// measuring the span; using `TEOF` here would make these fixtures collide
+/// with that real-tokenizer-shaped case instead of testing a plain span.
 let private tokensSpanningLines (firstLine: int) (lastLine: int) : Language.Lexer.Token[] =
-    [| { Kind = Language.Lexer.TEOF; Line = firstLine; Col = 1 }
-       { Kind = Language.Lexer.TEOF; Line = lastLine; Col = 1 } |]
+    [| { Kind = Language.Lexer.TSemicolon; Line = firstLine; Col = 1 }
+       { Kind = Language.Lexer.TSemicolon; Line = lastLine; Col = 1 } |]
 
 let private verbNode (definedOn: ObjRef) (meta: VerbMeta) (ast: Stmt list) (tokens: Language.Lexer.Token[]) : VerbNode =
     { Meta = meta
@@ -81,6 +86,24 @@ let ``verbLineCount spans first to last token line inclusive`` () =
 [<Fact>]
 let ``verbLineCount is 1 for a single-line verb`` () =
     Assert.Equal(1, verbLineCount (tokensSpanningLines 3 3))
+
+[<Fact>]
+let ``verbLineCount is 0 for a real empty verb (a lone trailing TEOF, not a truly empty array)`` () =
+    // What `Language.Lexer.tokenize` actually produces for a genuinely empty
+    // body - confirmed against `Lexer.fs`, which unconditionally appends a
+    // trailing `TEOF` even then. The regression this guards: a brand-new,
+    // never-edited verb's `Tokens` here previously counted as 1 line, not 0,
+    // which made `GetSemanticTokens`'s staleness guard falsely flag it as
+    // stale against the client's own (correctly 0) live line count.
+    Assert.Equal(0, verbLineCount [| { Kind = Language.Lexer.TEOF; Line = 1; Col = 1 } |])
+
+[<Fact>]
+let ``verbLineCount drops only the trailing TEOF, not real content on the same line`` () =
+    let tokens: Language.Lexer.Token[] =
+        [| { Kind = Language.Lexer.TSemicolon; Line = 1; Col = 1 }
+           { Kind = Language.Lexer.TEOF; Line = 1; Col = 2 } |]
+
+    Assert.Equal(1, verbLineCount tokens)
 
 // --- call count ----------------------------------------------------------
 
