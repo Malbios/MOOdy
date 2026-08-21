@@ -657,6 +657,13 @@ html, body {
   display: none; /* shown once connected, same gating #sidebar already has */
   gap: 2px;
   padding: 0.4em 0.4em 0;
+  /* Same reserved zone `.stale-tab-warning`'s own `padding-right` already
+     carves out for `#top-bar-actions`/`#settings-btn` (both `position:
+     fixed` over the top-right corner, independent of `#layout` entirely) -
+     without it, `#verb-tabs`' wrap computation has no idea that corner is
+     spoken for, so tabs reaching that far right render *underneath* those
+     buttons instead of wrapping to a new row before them. */
+  padding-right: 300px;
   background: #111;
   min-width: 0;
 }
