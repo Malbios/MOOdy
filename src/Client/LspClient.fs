@@ -627,6 +627,7 @@ let wire
     (showCaveat: string -> unit)
     (getIndentDelta: int64 -> string -> int[] option)
     (getLineMap: int64 -> string -> Sugar.LineMap option)
+    (getFetchedLineCount: int64 -> string -> int option)
     : (unit -> unit) =
     // Monaco can invoke a provider again before an earlier call's websocket
     // round-trip has come back - moving the mouse across a word re-fires
@@ -799,6 +800,11 @@ let wire
     /// array is 0-based like the LSP spec, unlike its position API), sort
     /// by the *displayed* position (remapping can reorder tokens across a
     /// reindented line), then delta-encode relative to the previous token.
+    /// Also sends `getFetchedLineCount`'s value for this tab along with the
+    /// request - lets the server tell whether its own statically-exported
+    /// copy of the verb still agrees with what was actually fetched live, so
+    /// a stale export returns no tokens instead of ones at the wrong
+    /// positions (see `Handlers.GetSemanticTokens`'s own doc comment).
     let provideDocumentSemanticTokens (_model: obj) : JS.Promise<obj> =
         semanticTokensGen <- semanticTokensGen + 1
         let myGen = semanticTokensGen
@@ -811,8 +817,12 @@ let wire
             | Some(objRef, verbName) ->
                 let currentDelta = getIndentDelta objRef verbName
                 let currentLineMap = getLineMap objRef verbName
+                let fetchedLineCount = getFetchedLineCount objRef verbName |> Option.defaultValue -1
 
-                let! result = requestAsync "moodev/getSemanticTokens" (createObj [ "objRef" ==> float objRef; "verbName" ==> verbName ])
+                let! result =
+                    requestAsync
+                        "moodev/getSemanticTokens"
+                        (createObj [ "objRef" ==> float objRef; "verbName" ==> verbName; "fetchedLineCount" ==> float fetchedLineCount ])
 
                 if myGen <> semanticTokensGen then
                     return noTokens ()

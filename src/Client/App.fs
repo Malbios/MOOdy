@@ -1016,6 +1016,18 @@ let mutable private tabSugarMaps: Map<int64 * string, Sugar.LineMap> = Map.empty
 /// close, same lifecycle as `tabContent` above.
 let mutable private tabViewStates: Map<int64 * string, obj> = Map.empty
 
+/// Each currently-open tab's most recently fetched live line count (the raw
+/// `lines` array `moodev-edit-content` last delivered, before any
+/// reindent/sugar transform) - sent alongside every `moodev/getSemanticTokens`
+/// request so the server can tell whether its own statically-exported copy
+/// of the verb still agrees with what's actually live (see
+/// `LanguageServer.Handlers.MooLspServer.GetSemanticTokens`'s own doc
+/// comment on why that can drift and what happens when it does). Same
+/// lifecycle as `tabIndentDeltas` - refreshed on every fetch, updated to the
+/// model's current count right after a successful save (the live source
+/// becomes exactly what's displayed at that instant), cleared on tab close.
+let mutable private tabFetchedLineCounts: Map<int64 * string, int> = Map.empty
+
 /// Leading whitespace character count of `line` - `0` for an empty line
 /// (matches `indentationRules`' own treatment: nothing to offset).
 let private leadingWhitespaceLength (line: string) : int =
@@ -1055,6 +1067,13 @@ let private getIndentDeltaFor (objRef: int64) (verbName: string) : int[] option 
 /// already has.
 let private getLineMapFor (objRef: int64) (verbName: string) : Sugar.LineMap option =
     Map.tryFind (objRef, verbName) tabSugarMaps
+
+/// The `int option` `LspClient.wire`'s `getFetchedLineCount` callback needs -
+/// `None` for "not tracked" (never fetched this session), same "nothing to
+/// compare against, so don't block on it" contract `getIndentDeltaFor`
+/// already has.
+let private getFetchedLineCountFor (objRef: int64) (verbName: string) : int option =
+    Map.tryFind (objRef, verbName) tabFetchedLineCounts
 
 /// VS Code's "preview tab" mechanic: at most one open verb tab is ever a
 /// preview at a time, shown in italics. Opening a brand-new verb while a
@@ -2796,6 +2815,7 @@ and private closeTabImmediate (objRef: int64, verbName: string) : unit =
     pendingSaveResolvers <- Map.remove key pendingSaveResolvers
     tabIndentDeltas <- Map.remove key tabIndentDeltas
     tabSugarMaps <- Map.remove key tabSugarMaps
+    tabFetchedLineCounts <- Map.remove key tabFetchedLineCounts
     tabViewStates <- Map.remove key tabViewStates
 
     if wasActive then
@@ -7171,6 +7191,13 @@ onWsMessage <-
                         // still get the right line, even without a per-line
                         // indent delta for that same verb.
                         recordIndentDelta objRef verb (List.ofArray lines) (editor.getModel ())
+                        // `lines` (not the sugared/reindented `displayContent`)
+                        // is exactly what the server's own `verbLineCount`
+                        // would compute from this same live fetch - sugar
+                        // mode is a purely client-side display transform the
+                        // server never sees, so this must stay in the raw
+                        // real-text line count, not whatever's on screen.
+                        tabFetchedLineCounts <- Map.add (objRef, verb) lines.Length tabFetchedLineCounts
                         // A fresh load is a clean baseline - any earlier
                         // failed/in-flight save for this tab no longer
                         // describes anything real.
@@ -7189,6 +7216,7 @@ onWsMessage <-
                                 tabContent <- Map.remove oldPreview tabContent
                                 tabIndentDeltas <- Map.remove oldPreview tabIndentDeltas
                                 tabSugarMaps <- Map.remove oldPreview tabSugarMaps
+                                tabFetchedLineCounts <- Map.remove oldPreview tabFetchedLineCounts
                                 tabViewStates <- Map.remove oldPreview tabViewStates
                                 tabOrder <- tabOrder |> List.map (fun t -> if t = VerbTab oldPreview then VerbTab(objRef, verb) else t)
                             | None ->
@@ -7270,7 +7298,15 @@ onWsMessage <-
                             // gates dirty-clearing only, never whether
                             // `lines`/`lineErrors` (which may legitimately
                             // be non-empty on success) get shown.
-                            if ok then setDirty false
+                            if ok then
+                                setDirty false
+                                // The editor's content just became the true
+                                // live source (same reasoning as the
+                                // `tabIndentDeltas` reset above) - safe to
+                                // read `editor`'s own model here specifically
+                                // because `activeTab` was just confirmed to
+                                // be this tab, unlike a background save.
+                                tabFetchedLineCounts <- Map.add key ((editor.getModel ()).getLineCount ()) tabFetchedLineCounts
 
                             editorDiagnosticsEl.textContent <- String.concat "\n" lines
 
@@ -8358,6 +8394,7 @@ let private refreshSemanticTokens =
         (fun message -> editorDiagnosticsEl.textContent <- message)
         getIndentDeltaFor
         getLineMapFor
+        getFetchedLineCountFor
 
 let private refreshDocsDefaultTitle = "Refresh builtins, $-name resolution, and verb docs from the language server"
 

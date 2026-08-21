@@ -961,7 +961,16 @@ let getCallGraph (graph: Graph) (objRef: ObjRef) (verbName: string) : CallGraphR
 
         { Callees = callees; Callers = callers }
 
-type GetSemanticTokensParams = { ObjRef: ObjRef; VerbName: string }
+/// `FetchedLineCount` is the line count of whatever this verb's editor tab
+/// most recently fetched live (`Sidecar.IdeActions.fetchVerb`'s own
+/// response) - `-1` when the client doesn't know it. Lets `GetSemanticTokens`
+/// detect a stale static export (see its own doc comment) without a second
+/// live round trip: the client already has this number from the fetch that
+/// populated the editor.
+type GetSemanticTokensParams =
+    { ObjRef: ObjRef
+      VerbName: string
+      FetchedLineCount: int }
 
 /// One classified reference for the resolver-driven semantic-highlighting
 /// feature - deliberately NOT the real LSP `SemanticTokens.Data`
@@ -1146,12 +1155,24 @@ let private maxNestingDepth (stmts: Stmt list) : int =
 
     go stmts
 
+/// A verb's own line count, derived from its `Tokens` (cheaper than
+/// re-reading `SourcePath` off disk per verb) - the span from the first
+/// token's line to the last, inclusive. Used both by `computeVerbMetrics`'s
+/// own report and by `GetSemanticTokens`'s staleness guard, which needs the
+/// exact same "how many lines is this verb, per what was last exported" fact
+/// to compare against what the client just fetched live.
+let verbLineCount (tokens: Language.Lexer.Token[]) : int =
+    if Array.isEmpty tokens then
+        0
+    else
+        let lines = tokens |> Array.map (fun t -> t.Line)
+        Array.max lines - Array.min lines + 1
+
 /// Corpus-wide maintenance-hotspot report: every verb's own line count
-/// (from `Tokens` - cheaper than re-reading `SourcePath` off disk per verb),
-/// corpus-wide call count (aggregated from the same `allCallEdges` list
-/// `getCallGraph` uses per-symbol), and deepest nesting. Verbs with no
-/// parsed `Ast`/`Tokens` (capture-only, never successfully lexed) are
-/// skipped - there's nothing to measure.
+/// (`verbLineCount`), corpus-wide call count (aggregated from the same
+/// `allCallEdges` list `getCallGraph` uses per-symbol), and deepest nesting.
+/// Verbs with no parsed `Ast`/`Tokens` (capture-only, never successfully
+/// lexed) are skipped - there's nothing to measure.
 let computeVerbMetrics (graph: Graph) : VerbMetricsEntry[] =
     let callCounts =
         allCallEdges graph
@@ -1165,17 +1186,10 @@ let computeVerbMetrics (graph: Graph) : VerbMetricsEntry[] =
         |> Seq.choose (fun v ->
             match v.Meta.Names, v.Ast, v.Tokens with
             | primary :: _, Some stmts, Some tokens ->
-                let lineCount =
-                    if Array.isEmpty tokens then
-                        0
-                    else
-                        let lines = tokens |> Array.map (fun t -> t.Line)
-                        Array.max lines - Array.min lines + 1
-
                 Some
                     { ObjRef = num
                       VerbName = primary
-                      LineCount = lineCount
+                      LineCount = verbLineCount tokens
                       CallCount = callCounts |> Map.tryFind (num, primary) |> Option.defaultValue 0
                       MaxDepth = maxNestingDepth stmts }
             | _ -> None))
@@ -2764,26 +2778,44 @@ type MooLspServer(_client: MooLspClient, getGraph: unit -> Graph, bridge: Sideca
             return Ok(getCallGraph graph p.ObjRef p.VerbName)
         }
 
-    /// Custom method (`moodev/getSemanticTokens`, `{objRef, verbName}`) -
-    /// resolver-driven semantic highlighting for that verb. Not a real
-    /// `textDocument/semanticTokens/full` override: the wire shape
-    /// deliberately isn't the LSP spec's delta-encoded `Data: uint32[]`
+    /// Custom method (`moodev/getSemanticTokens`, `{objRef, verbName,
+    /// fetchedLineCount}`) - resolver-driven semantic highlighting for that
+    /// verb. Not a real `textDocument/semanticTokens/full` override: the wire
+    /// shape deliberately isn't the LSP spec's delta-encoded `Data: uint32[]`
     /// array (see `SemanticTokenEntry`'s own doc comment), so declaring the
     /// real `SemanticTokensProvider` capability would be actively
     /// misleading to any real LSP client - this server doesn't (this
     /// project's own client never inspects capabilities anyway, per
     /// `LspClient.fs`'s top-of-file doc comment).
+    ///
+    /// `verb.Ast`/`verb.Tokens` here are the *statically exported* copy of
+    /// the verb the graph loaded from disk, not the live content the client
+    /// actually fetched and is displaying (`Sidecar.IdeActions.fetchVerb`, a
+    /// separate, always-live `verb_code()` call) - those two can disagree
+    /// whenever the export is stale relative to the live MOO (an edit made
+    /// outside the normal save/capture path, a missed re-export, ...).
+    /// Confirmed live: this produced real, misleading highlighting - token
+    /// positions computed against an old, shorter version of a verb overlaid
+    /// onto the current, longer live text, lighting up unrelated words in
+    /// the wrong colors. `p.FetchedLineCount` (`-1` when the client doesn't
+    /// know it) is the same "line counts must agree or don't touch it"
+    /// guard `Client/App.fs`'s `recordIndentDelta` already uses for
+    /// indentation - falling back to no tokens (plain Monarch coloring, a
+    /// real but less rich fallback) is far better than tokens at the wrong
+    /// positions.
     member _.GetSemanticTokens(p: GetSemanticTokensParams) : Async<Result<SemanticTokenEntry[], JsonRpc.Error>> =
         async {
             let graph = getGraph ()
             match verbAtUri graph (moodevVerbUri p.ObjRef p.VerbName) with
             | None -> return Ok [||]
             | Some(enclosingObj, verb) ->
-                match verb.Ast with
-                | None -> return Ok [||]
-                | Some stmts ->
+                match verb.Ast, verb.Tokens with
+                | Some stmts, Some verbTokens when
+                    p.FetchedLineCount < 0 || p.FetchedLineCount = verbLineCount verbTokens
+                    ->
                     let! tokens = computeSemanticTokens graph bridge enclosingObj stmts
                     return Ok tokens
+                | _ -> return Ok [||]
         }
 
     /// Custom method (`moodev/findGotchas`, no params) - the "MOOcode

@@ -651,5 +651,6 @@ let wireLsp
     (showCaveat: string -> unit)
     (getIndentDelta: int64 -> string -> int[] option)
     (getLineMap: int64 -> string -> Sugar.LineMap option)
+    (getFetchedLineCount: int64 -> string -> int option)
     : (unit -> unit) =
-    wire monaco getCurrentDocument jumpTo showCaveat getIndentDelta getLineMap
+    wire monaco getCurrentDocument jumpTo showCaveat getIndentDelta getLineMap getFetchedLineCount

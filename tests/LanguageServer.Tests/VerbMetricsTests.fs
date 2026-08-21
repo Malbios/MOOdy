@@ -69,6 +69,19 @@ let ``a verb with no tokens gets a zero line count, not an exception`` () =
     let metrics = computeVerbMetrics graph
     Assert.Contains(metrics, (fun m -> m.ObjRef = 1L && m.VerbName = "empty" && m.LineCount = 0))
 
+// --- verbLineCount (extracted for `GetSemanticTokens`'s staleness guard too) ---
+
+[<Fact>]
+let ``verbLineCount is 0 for an empty token array`` () = Assert.Equal(0, verbLineCount [||])
+
+[<Fact>]
+let ``verbLineCount spans first to last token line inclusive`` () =
+    Assert.Equal(8, verbLineCount (tokensSpanningLines 5 12))
+
+[<Fact>]
+let ``verbLineCount is 1 for a single-line verb`` () =
+    Assert.Equal(1, verbLineCount (tokensSpanningLines 3 3))
+
 // --- call count ----------------------------------------------------------
 
 [<Fact>]
