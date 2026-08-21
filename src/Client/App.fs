@@ -878,6 +878,21 @@ let mutable private draggedTreeObjRef: int64 option = None
 let mutable private draggedOwnPropertyName: string option = None
 let mutable private draggedOwnVerbName: string option = None
 
+/// The object whose new-property/new-verb name textbox should regain focus
+/// once its next `moodev-prop-add-result`/`moodev-verb-add-result` finishes
+/// re-rendering the inspector (`renderInspectorStructure`'s own render-
+/// completion point, in the `moodev-live-info` handler below) - set only
+/// when the create was triggered by pressing Enter *in that name box*
+/// (`renderInspectorStructure`'s own `addNameInput`/`addVerbNameInput`
+/// `onkeydown`), not the "+" button or Enter in the value field, so rapid
+/// keyboard-only creation of several properties/verbs in a row doesn't need
+/// a mouse click back into the name box each time. Cleared either once
+/// consumed (a successful create re-renders the matching object's
+/// inspector) or on a failed create for the same object, so a rejected
+/// attempt can't cause a stale refocus on some later, unrelated re-render.
+let mutable private focusNewPropNameAfterCreate: int64 option = None
+let mutable private focusNewVerbNameAfterCreate: int64 option = None
+
 /// The Bulk Find-and-Replace view's own state: the search/replace terms the
 /// current result set was fetched with (threaded back through to the
 /// "bulk-replace" action on Apply, since a checkbox row itself only knows
@@ -4433,10 +4448,31 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
 
     // Enter in the name field submits with the currently selected
     // perms/owner configuration, mirroring the new-verb widget's own
-    // name-field behavior. Enter in the value field - the last field
-    // you'd naturally fill in - does the same, instead of requiring a
-    // mouse trip to the button after typing everything.
-    addNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
+    // name-field behavior - and, on success, hands focus back to the (freshly
+    // re-rendered) name field, so creating several properties in a row needs
+    // no mouse trip back into it (`focusNewPropNameAfterCreate`'s own
+    // comment). Enter in the value field - the last field you'd naturally
+    // fill in - submits the same way, but doesn't refocus anything; that one
+    // wasn't the gesture this is for.
+    addNameInput.onkeydown <-
+        fun ev ->
+            if ev.key = "Enter" then
+                focusNewPropNameAfterCreate <- Some objRef
+
+                // Creating the object's *first* own property flips
+                // `mkCollapseTrigger`'s own no-stored-preference default from
+                // "expanded" (nothing to hide yet) to "collapsed" (there's
+                // now something to hide) on this very re-render - which
+                // would hide the add-row the focus above is about to target,
+                // silently no-op'ing `.focus()` (a `display:none` ancestor
+                // makes an element unfocusable, confirmed live: this was the
+                // actual reason the very first refocus attempt never took).
+                // An explicit stored "0" pre-empts that default outright, for
+                // exactly the reason a real user would want it to stay open
+                // here: they're actively using the add-row via the keyboard.
+                window.localStorage.setItem ("moodev-inspector-props-collapsed", "0")
+                addBtn.click ()
+
     addValueInput.onkeydown <- fun ev -> if ev.key = "Enter" then addBtn.click ()
 
     addBtn.onclick <-
@@ -4954,7 +4990,20 @@ and private renderInspectorStructure (objRef: int64) (info: obj) (highlightProp:
     // (owner, perms, arg spec) is currently set to - `addVerbBtn.click()`
     // re-reads all of those fields fresh, so there's nothing extra to wire
     // up. Same precedent as `corifyInput.onkeydown` elsewhere in this file.
-    addVerbNameInput.onkeydown <- fun ev -> if ev.key = "Enter" then addVerbBtn.click ()
+    // On success, hands focus back to the (freshly re-rendered) name field -
+    // see `focusNewVerbNameAfterCreate`'s own comment.
+    addVerbNameInput.onkeydown <-
+        fun ev ->
+            if ev.key = "Enter" then
+                focusNewVerbNameAfterCreate <- Some objRef
+
+                // See the matching comment on the property widget's own
+                // `addNameInput.onkeydown` - the object's first own verb
+                // flips the Verbs section's no-stored-preference default
+                // from expanded to collapsed on this very re-render
+                // otherwise, silently no-op'ing the focus below.
+                window.localStorage.setItem ("moodev-inspector-verbs-collapsed", "0")
+                addVerbBtn.click ()
 
     let mkVerbCell (child: HTMLElement) : HTMLElement =
         let td = document.createElement ("td")
@@ -7431,6 +7480,14 @@ onWsMessage <-
                             loadInspector objRef None
                         else
                             inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+
+                            // A failed create never re-renders (no
+                            // `loadInspector` call above), so nothing would
+                            // otherwise consume this - clear it here instead
+                            // of leaving it to misfire on some later,
+                            // unrelated refresh of the same object.
+                            if focusNewPropNameAfterCreate = Some objRef then
+                                focusNewPropNameAfterCreate <- None
                     | _ -> ()
                 | None -> ()
             elif header.StartsWith("moodev-verb-add-result") then
@@ -7445,6 +7502,11 @@ onWsMessage <-
                             loadInspector objRef None
                         else
                             inspectorDiagnosticsEl.textContent <- String.concat "\n" lines
+
+                            // See the matching comment in the
+                            // `moodev-prop-add-result` branch above.
+                            if focusNewVerbNameAfterCreate = Some objRef then
+                                focusNewVerbNameAfterCreate <- None
                     | _ -> ()
                 | None -> ()
             elif header.StartsWith("moodev-aliases-set-result") then
@@ -7814,6 +7876,40 @@ onWsMessage <-
                                         activeInspectorProp |> Option.bind (fun (r, p) -> if r = objRef then Some p else None)
 
                                     renderInspectorStructure objRef info highlightProp
+
+                                    // Hands focus back to the new-property/
+                                    // new-verb name field once it's just been
+                                    // rebuilt by the render above, iff this
+                                    // refresh was actually triggered by an
+                                    // Enter-in-that-name-field create (see
+                                    // `focusNewPropNameAfterCreate`'s own
+                                    // comment) - never on an unrelated
+                                    // refresh (a rename, a reparent, ...).
+                                    match focusNewPropNameAfterCreate with
+                                    | Some r when r = objRef ->
+                                        focusNewPropNameAfterCreate <- None
+
+                                        let el =
+                                            document.querySelector (
+                                                ".inspector-props-table tr.inspector-add-property input.inspector-property-value"
+                                            )
+
+                                        if not (isNullOrUndefined el) then
+                                            (el :?> HTMLInputElement).focus ()
+                                    | _ -> ()
+
+                                    match focusNewVerbNameAfterCreate with
+                                    | Some r when r = objRef ->
+                                        focusNewVerbNameAfterCreate <- None
+
+                                        let el =
+                                            document.querySelector (
+                                                ".inspector-verbs-table tr.inspector-add-property input.inspector-property-value"
+                                            )
+
+                                        if not (isNullOrUndefined el) then
+                                            (el :?> HTMLInputElement).focus ()
+                                    | _ -> ()
 
                                     // `getLiveInfo`'s own verb/property scan
                                     // self-limits via `ticks_left()` on a
