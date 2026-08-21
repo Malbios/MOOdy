@@ -671,6 +671,16 @@ html, body {
   gap: 2px;
   min-width: 0;
   flex-wrap: wrap;
+  /* Without this, the default cross-axis `stretch` pads every wrapped tab
+     out to `#verb-tabs`' own (very slightly taller, apparently a flex-wrap
+     quirk) box height instead of each tab's own natural content height -
+     confirmed live: this alone made every dynamic tab render ~2px taller
+     than `#tab-game` (a sibling of `#verb-tabs`, not a child, so never
+     subject to this stretch at all), the actual cause of the reported
+     "Game tab doesn't look like part of the others" - matching
+     `#main-tabs.visible`'s own `align-items: flex-end` keeps both groups
+     aligned the same way. */
+  align-items: flex-end;
 }
 
 .main-tab {
