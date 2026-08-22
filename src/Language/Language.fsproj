@@ -9,6 +9,7 @@
     <Compile Include="Sugar.fs" />
     <Compile Include="Ast.fs" />
     <Compile Include="Parser.fs" />
+    <Compile Include="Blocks.fs" />
   </ItemGroup>
 
 </Project>

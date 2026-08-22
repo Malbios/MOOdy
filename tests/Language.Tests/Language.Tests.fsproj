@@ -10,6 +10,7 @@
     <Compile Include="SugarTests.fs" />
     <Compile Include="CorpusTests.fs" />
     <Compile Include="ParserCorpusTests.fs" />
+    <Compile Include="BlocksTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
