@@ -191,6 +191,29 @@ let ``a computed-name verb call is still out of scope and round-trips via the Un
     assertRoundTrips [ stmt ]
 
 [<Fact>]
+let ``isFullyRepresentable is true for a verb body with no unsupported constructs`` () =
+    let stmts =
+        [ While(
+              Some "loop",
+              Binary(Lt, id_ "i", IntLit 10L),
+              [ If([ (Binary(Eq, id_ "i", IntLit 0L), [ ExprStmt(Assign(id_ "x", IntLit 1L)) ]) ], None)
+                ExprStmt(Assign(id_ "i", Binary(Add, id_ "i", IntLit 1L))) ]
+          ) ]
+
+    Assert.True(isFullyRepresentable stmts)
+
+[<Fact>]
+let ``isFullyRepresentable is false when an unsupported construct is nested arbitrarily deep`` () =
+    let computedCall = VerbCall(id_ "obj", id_ "verbNameVar", [], 1, 1)
+
+    // Buried three levels down: while -> if -> expression operand.
+    let stmts =
+        [ While(None, id_ "cond", [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, computedCall)) ]) ], None) ]) ]
+
+    Assert.False(isFullyRepresentable stmts)
+    Assert.False(isFullyRepresentable [ ErrorStmt("bad", 1, 1) ])
+
+[<Fact>]
 let ``an ErrorStmt is the one remaining unsupported statement shape, and degrades to a leaf inside an if body`` () =
     let errorStmt = ErrorStmt("recovered after a parse failure", 1, 1)
 

@@ -289,3 +289,77 @@ and private blockToExceptArm (arm: BlockExceptArm) : ExceptArm =
 /// round trip.
 let astToBlocks (stmts: Stmt list) : BlockStmt list = stmts |> List.map stmtToBlock
 let blocksToAst (blocks: BlockStmt list) : Stmt list = blocks |> List.map blockToStmt
+
+/// Whether a `BlockValue`/`BlockStmt` (or, transitively, everything under
+/// it) is real block structure with no `VUnsupported`/`SUnsupported` leaf
+/// anywhere - what a real toggle would call to decide whether switching a
+/// verb to block view is safe. This only answers "would it be lossy" -
+/// what to actually do when it would (warn, refuse, silently fall back to
+/// text) is still an open product question, see the card's own notes.
+let rec private valueIsFullyRepresentable (value: BlockValue) : bool =
+    match value with
+    | VUnsupported _ -> false
+    | VIntLit _
+    | VFloatLit _
+    | VStrLit _
+    | VObjLit _
+    | VErrLit _
+    | VBoolLit _
+    | VIdent _
+    | VFirstIndex
+    | VLastIndex -> true
+    | VBinary(_, l, r) -> valueIsFullyRepresentable l && valueIsFullyRepresentable r
+    | VUnary(_, e) -> valueIsFullyRepresentable e
+    | VCond(c, t, f) -> valueIsFullyRepresentable c && valueIsFullyRepresentable t && valueIsFullyRepresentable f
+    | VAssign(target, v) -> valueIsFullyRepresentable target && valueIsFullyRepresentable v
+    | VProp(receiver, _) -> valueIsFullyRepresentable receiver
+    | VVerbCall(receiver, _, args) -> valueIsFullyRepresentable receiver && args |> List.forall argIsFullyRepresentable
+    | VCall(_, args) -> args |> List.forall argIsFullyRepresentable
+    | VListLit args -> args |> List.forall argIsFullyRepresentable
+    | VMapLit pairs -> pairs |> List.forall (fun (k, v) -> valueIsFullyRepresentable k && valueIsFullyRepresentable v)
+    | VIndex(e, i) -> valueIsFullyRepresentable e && valueIsFullyRepresentable i
+    | VRange(lo, hi) -> valueIsFullyRepresentable lo && valueIsFullyRepresentable hi
+    | VScatter(items, v) -> (items |> List.forall scatterItemIsFullyRepresentable) && valueIsFullyRepresentable v
+    | VCatch(e, codes, fallback) ->
+        valueIsFullyRepresentable e && codesIsFullyRepresentable codes && (fallback |> Option.forall valueIsFullyRepresentable)
+
+and private argIsFullyRepresentable (arg: BlockArg) : bool =
+    match arg with
+    | AArg v
+    | ASplice v -> valueIsFullyRepresentable v
+
+and private codesIsFullyRepresentable (codes: BlockCodes) : bool =
+    match codes with
+    | BAnyCode -> true
+    | BCodes args -> args |> List.forall argIsFullyRepresentable
+
+and private scatterItemIsFullyRepresentable (item: BlockScatterItem) : bool =
+    match item with
+    | BRequired _
+    | BRest _ -> true
+    | BOptional(_, d) -> d |> Option.forall valueIsFullyRepresentable
+
+let rec private stmtIsFullyRepresentable (stmt: BlockStmt) : bool =
+    match stmt with
+    | SUnsupported _ -> false
+    | SIf(arms, elsePart) ->
+        (arms |> List.forall (fun (c, body) -> valueIsFullyRepresentable c && body |> List.forall stmtIsFullyRepresentable))
+        && (elsePart |> Option.forall (List.forall stmtIsFullyRepresentable))
+    | SForList(_, _, source, body) -> valueIsFullyRepresentable source && body |> List.forall stmtIsFullyRepresentable
+    | SForRange(_, lo, hi, body) ->
+        valueIsFullyRepresentable lo && valueIsFullyRepresentable hi && body |> List.forall stmtIsFullyRepresentable
+    | SWhile(_, cond, body) -> valueIsFullyRepresentable cond && body |> List.forall stmtIsFullyRepresentable
+    | SFork(_, delay, body) -> valueIsFullyRepresentable delay && body |> List.forall stmtIsFullyRepresentable
+    | SReturn v -> v |> Option.forall valueIsFullyRepresentable
+    | SBreak _
+    | SContinue _ -> true
+    | SExpr v -> valueIsFullyRepresentable v
+    | STryExcept(body, arms) ->
+        (body |> List.forall stmtIsFullyRepresentable)
+        && (arms |> List.forall (fun arm -> codesIsFullyRepresentable arm.Codes && arm.Body |> List.forall stmtIsFullyRepresentable))
+    | STryFinally(body, handler) -> (body |> List.forall stmtIsFullyRepresentable) && (handler |> List.forall stmtIsFullyRepresentable)
+
+/// Whether every construct in `stmts` maps to a real block - no
+/// `VUnsupported`/`SUnsupported` anywhere in the tree `astToBlocks` would
+/// produce for it.
+let isFullyRepresentable (stmts: Stmt list) : bool = stmts |> astToBlocks |> List.forall stmtIsFullyRepresentable
