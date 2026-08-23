@@ -112,6 +112,10 @@ let private tabGameBtn = document.getElementById ("tab-game")
 let private verbTabsEl = document.getElementById ("verb-tabs")
 let private editorPaneEl = document.getElementById ("editor-pane")
 let private editorMonacoEl = document.getElementById ("editor-monaco")
+let private editorBlocklyEl = document.getElementById ("editor-blockly")
+let private editorBlocklyToggleBtn = document.getElementById ("editor-blockly-toggle-btn")
+let private editorBlocklyApplyBtn = document.getElementById ("editor-blockly-apply-btn")
+let private editorBlocklyCancelBtn = document.getElementById ("editor-blockly-cancel-btn")
 let private editorDiagnosticsEl = document.getElementById ("editor-diagnostics")
 let private statusDirtyEl = document.getElementById ("status-dirty")
 let private statusPositionEl = document.getElementById ("status-position")
@@ -470,7 +474,119 @@ connectWebSocket ()
 
 Monaco.registerMoocodeLanguage ()
 Monaco.registerSnippetProvider ()
+BlocklyEditor.register ()
 let private editor = Monaco.create editorMonacoEl
+
+/// The Blockly visual-editor toggle for the verb editor tab (the "Google
+/// Blocks mode for visual coding" card) - a sub-mode within `#editor-pane`,
+/// same relationship `showingVerbHistory`/`showingParentDiff` have to it,
+/// not a separate top-level pane. One workspace instance is created lazily
+/// on first use and reused across tabs, mirroring `editor` itself (a single
+/// shared Monaco instance swapped via `setValue`, not one per tab).
+///
+/// Action-gated, not live-synced, mirroring the inspector's own "Edit as
+/// list/map" toggle: switching to blocks loads a snapshot of the current
+/// Monaco text; "Apply" converts the current block tree back to text and
+/// writes it into Monaco (still not saved to the MOO - that's the existing,
+/// separate save action); "Cancel" discards whatever's in the workspace and
+/// reverts to whatever Monaco already had.
+module private BlocklyToggle =
+    let mutable private workspace: obj option = None
+
+    let private getWorkspace () : obj =
+        match workspace with
+        | Some ws -> ws
+        | None ->
+            let ws = BlocklyEditor.inject editorBlocklyEl
+            workspace <- Some ws
+            ws
+
+    /// `Error` with a human-readable reason for a verb that can't (yet)
+    /// switch to blocks - either it doesn't currently parse cleanly (an
+    /// `ErrorStmt` anywhere already makes both checks below fail, so no
+    /// separate check is needed for that) or it uses a construct outside
+    /// this slice's real Blockly block set. Gates on `BlocklyJson.
+    /// isFullyMappable`, not `Blocks.isFullyRepresentable` - the latter
+    /// reflects `Blocks.fs`'s own wider coverage (for/fork/try/scatter/
+    /// catch all have real `BlockStmt` cases there), but this slice's
+    /// actual JS-side block set (`Client/BlocklyEditor.fs`) is smaller;
+    /// confirmed live that skipping this check lets a for-loop verb reach
+    /// `loadStateText` and throw `Invalid block definition for type:
+    /// moo_unsupported`, a real crash, not a graceful refusal. What to do
+    /// about an unsupported verb (refuse outright, as here, vs.
+    /// warn-and-fall-back, vs. something else) is still an open product
+    /// question - see the card's own notes.
+    let private textToBlocklyState (text: string) : Result<string, string> =
+        match Lexer.tokenize text with
+        | { Error = Some err } -> Error(sprintf "Can't switch to blocks - this verb doesn't lex cleanly (%A)." err)
+        | { Tokens = tokens; Error = None } ->
+            let blocks = Parser.parse tokens |> Blocks.astToBlocks
+
+            if not (BlocklyJson.isFullyMappable blocks) then
+                Error
+                    "Can't switch to blocks - this verb uses a construct blocks don't support yet (a for/fork/try loop, scatter-assignment, the catch-expression, a computed property/verb name, or a parse error), or doesn't parse cleanly right now."
+            else
+                // `None` here just means an empty verb body (`stmtsToJson
+                // []`, `BlocklyEditor.loadStateText`'s own "" case) - not a
+                // conversion failure.
+                match blocks |> BlocklyJson.stmtsToJson with
+                | Some json -> Ok(BlocklyJson.toJsonText json)
+                | None -> Ok ""
+
+    let private blocklyStateToText (stateText: string) : Result<string, string> =
+        if stateText = "" then
+            Ok ""
+        else
+            match BlocklyJson.parseJsonText stateText with
+            | None -> Error "Couldn't apply these blocks - internal error reading the current workspace."
+            | Some json ->
+                match BlocklyJson.jsonToStmts json with
+                | None -> Error "Couldn't apply these blocks - internal error converting them back to code."
+                | Some blocks ->
+                    match blocks |> Blocks.blocksToAst |> Printer.print with
+                    | Ok text -> Ok text
+                    | Error msg -> Error(sprintf "Couldn't apply these blocks - %s" msg)
+
+    /// Reverts `#editor-pane` to showing plain Monaco - called both by
+    /// "Cancel"/"Apply" and whenever a `VerbTab` pane is (re)activated (see
+    /// `showPaneFor`), so switching tabs while mid-toggle never leaves a
+    /// stale block view showing for the next tab.
+    let showMonaco () : unit =
+        editorMonacoEl.setAttribute ("style", "display:block")
+        editorBlocklyEl.setAttribute ("style", "display:none")
+        editorBlocklyToggleBtn.setAttribute ("style", "display:inline-block")
+        editorBlocklyApplyBtn.setAttribute ("style", "display:none")
+        editorBlocklyCancelBtn.setAttribute ("style", "display:none")
+
+    let private showBlocks () : unit =
+        editorMonacoEl.setAttribute ("style", "display:none")
+        editorBlocklyEl.setAttribute ("style", "display:block")
+        editorBlocklyToggleBtn.setAttribute ("style", "display:none")
+        editorBlocklyApplyBtn.setAttribute ("style", "display:inline-block")
+        editorBlocklyCancelBtn.setAttribute ("style", "display:inline-block")
+
+    editorBlocklyToggleBtn.onclick <-
+        fun _ ->
+            match textToBlocklyState (editor.getValue ()) with
+            | Error msg -> window.alert msg
+            | Ok stateText ->
+                let ws = getWorkspace ()
+                BlocklyEditor.loadStateText ws stateText
+                showBlocks ()
+                BlocklyEditor.resize ws
+
+    editorBlocklyApplyBtn.onclick <-
+        fun _ ->
+            match workspace with
+            | None -> ()
+            | Some ws ->
+                match blocklyStateToText (BlocklyEditor.getStateText ws) with
+                | Error msg -> window.alert msg
+                | Ok text ->
+                    editor.setValue text
+                    showMonaco ()
+
+    editorBlocklyCancelBtn.onclick <- fun _ -> showMonaco ()
 
 /// Word wrap / font size / minimap: real, live-applied Monaco preferences
 /// persisted to localStorage - shown/edited via the gear-icon overlay, and
@@ -1683,6 +1799,9 @@ let private showPaneFor (tab: OpenTab) : unit =
     | VerbTab _ when showingParentDiff -> activateOnly verbParentDiffPaneEl
     | VerbTab _ ->
         activateOnly editorPaneEl
+        // Never leave a previous tab's mid-toggle Blockly view showing for
+        // this one - every plain-editor activation starts back on Monaco.
+        BlocklyToggle.showMonaco ()
         // The container was `display:none` a moment ago - force Monaco to
         // re-measure rather than rely on ResizeObserver picking this up.
         editor.layout ()

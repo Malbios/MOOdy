@@ -219,11 +219,15 @@
       </div>
       <div id="editor-pane">
         <div id="editor-monaco"></div>
+        <div id="editor-blockly" style="display:none"></div>
         <pre id="editor-diagnostics"></pre>
         <div id="editor-status">
           <span id="status-dirty"></span>
           <span id="status-position"></span>
           <span id="status-stale-highlighting" class="hidden" title="This verb's exported copy is out of date, so live syntax highlighting was suppressed rather than shown at the wrong positions. Click Refresh (top right) to re-sync it from the live MOO.">⚠ highlighting may be stale</span>
+          <button id="editor-blockly-toggle-btn" class="pane-action-btn" title="Switch to the block-based visual editor">🧩 Blocks</button>
+          <button id="editor-blockly-apply-btn" class="pane-action-btn" style="display:none" title="Convert the current blocks back to text (does not save)">✓ Apply</button>
+          <button id="editor-blockly-cancel-btn" class="pane-action-btn" style="display:none" title="Discard block edits and go back to text">✕ Cancel</button>
           <button id="editor-history-btn" class="pane-action-btn" title="View this verb's history">🕐 History</button>
           <button id="editor-compare-parent-btn" class="pane-action-btn" style="display:none">⇄ Compare to parent</button>
         </div>

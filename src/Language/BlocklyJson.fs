@@ -618,3 +618,72 @@ let parseJsonText (text: string) : JsonValue option =
     | Some v ->
         skipWs ()
         if pos = len then Some v else None
+
+/// Whether every construct in `blocks` maps to a *real* Blockly block type
+/// this module defines - not `Blocks.isFullyRepresentable` (which reflects
+/// `Blocks.fs`'s own, wider coverage: `ForList`/`ForRange`/`Fork`/
+/// `TryExcept`/`TryFinally`/`Scatter`/`Catch` all have real `BlockStmt`/
+/// `BlockValue` cases there). This module's own JS-side block set (see
+/// `Client/BlocklyEditor.fs`) is deliberately smaller for this slice, so a
+/// verb `Blocks.isFullyRepresentable` calls fully representable can still
+/// contain a construct with **no registered Blockly block type at all** -
+/// confirmed live: loading a `moo_unsupported`/`moo_unsupported_expr`
+/// placeholder (what `stmtToJsonFields`/`valueToJson`'s own fallback arms
+/// produce for exactly this gap) into a real workspace throws `Invalid
+/// block definition for type: moo_unsupported`, not a graceful no-op. A
+/// real toggle needs to gate on *this* check, not `isFullyRepresentable`
+/// alone, before ever calling `stmtsToJson`/`loadStateText`.
+let rec private valueIsFullyMappable (value: BlockValue) : bool =
+    match value with
+    | VMapLit _
+    | VRange _
+    | VFirstIndex
+    | VLastIndex
+    | VScatter _
+    | VCatch _
+    | VUnsupported _ -> false
+    | VIntLit _
+    | VFloatLit _
+    | VStrLit _
+    | VObjLit _
+    | VErrLit _
+    | VBoolLit _
+    | VIdent _ -> true
+    | VBinary(_, l, r) -> valueIsFullyMappable l && valueIsFullyMappable r
+    | VUnary(_, e) -> valueIsFullyMappable e
+    | VCond(c, t, f) -> valueIsFullyMappable c && valueIsFullyMappable t && valueIsFullyMappable f
+    | VAssign(target, v) -> valueIsFullyMappable target && valueIsFullyMappable v
+    | VProp(receiver, _) -> valueIsFullyMappable receiver
+    | VVerbCall(receiver, _, args) -> valueIsFullyMappable receiver && args |> List.forall argIsFullyMappable
+    | VCall(_, args) -> args |> List.forall argIsFullyMappable
+    | VListLit args -> args |> List.forall argIsFullyMappable
+    | VIndex(e, i) -> valueIsFullyMappable e && valueIsFullyMappable i
+
+and private argIsFullyMappable (arg: BlockArg) : bool =
+    match arg with
+    | AArg v
+    | ASplice v -> valueIsFullyMappable v
+
+let rec private stmtIsFullyMappable (stmt: BlockStmt) : bool =
+    match stmt with
+    | SForList _
+    | SForRange _
+    | SFork _
+    | STryExcept _
+    | STryFinally _
+    | SUnsupported _ -> false
+    | SBreak _
+    | SContinue _
+    | SComment _ -> true
+    | SIf(arms, elsePart) ->
+        (arms |> List.forall (fun (c, body) -> valueIsFullyMappable c && body |> List.forall stmtIsFullyMappable))
+        && (elsePart |> Option.forall (List.forall stmtIsFullyMappable))
+    | SWhile(_, cond, body) -> valueIsFullyMappable cond && body |> List.forall stmtIsFullyMappable
+    | SReturn v -> v |> Option.forall valueIsFullyMappable
+    | SExpr v -> valueIsFullyMappable v
+
+/// Whether every construct in `blocks` (already converted via
+/// `Blocks.astToBlocks`) has a real, registered Blockly block type -
+/// see this function's own doc comment above for why this is a separate,
+/// necessary check from `Blocks.isFullyRepresentable`.
+let isFullyMappable (blocks: BlockStmt list) : bool = blocks |> List.forall stmtIsFullyMappable

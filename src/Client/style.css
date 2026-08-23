@@ -1641,7 +1641,8 @@ html, body {
   position: relative;
 }
 
-#editor-monaco {
+#editor-monaco,
+#editor-blockly {
   flex: 1;
   min-height: 0;
 }

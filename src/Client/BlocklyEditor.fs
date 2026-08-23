@@ -54,10 +54,23 @@ let private blockly: obj = importAll "blockly"
 /// ... this is static data with no F# values spliced in").
 let private maxCallArity = 4
 
-emitJsStatement
-    ()
-    """
-    Blockly.Extensions.register('moo_call_extra_state', function() {
+/// The `moo_call_extra_state` extension function itself - static data (a
+/// function *value*, never called from here), matching the same
+/// "`emitJsExpr` for an inert JS blob, a separate dynamic call elsewhere to
+/// actually register it" split `registerMoocodeLanguage` uses for
+/// `moocodeLanguage`/`moocodeTheme` below. This is the fix for a real bug
+/// hit live: an earlier version of this file called `Blockly.Extensions.
+/// register(...)`/`Blockly.common.defineBlocksWithJsonArray(...)` directly
+/// inside a bare `emitJsStatement`, referencing a global `Blockly` that
+/// doesn't exist - `importAll "blockly"` binds the module namespace to this
+/// file's own `blockly` local, it never touches `window.Blockly` - so this
+/// threw `Cannot read properties of undefined (reading 'register')` on
+/// every page load. Registration now happens through `blockly?...`
+/// dynamic calls in `register()`, same as everything else in this file.
+let private extraStateExtensionFn: obj =
+    emitJsExpr
+        ()
+        """(function() {
         this.spliceFlags_ = [false, false, false, false];
         this.saveExtraState = function() {
             return {'splices': this.spliceFlags_};
@@ -65,8 +78,12 @@ emitJsStatement
         this.loadExtraState = function(state) {
             this.spliceFlags_ = (state && state['splices']) || [false, false, false, false];
         };
-    });
-    Blockly.common.defineBlocksWithJsonArray([
+    })"""
+
+let private blockDefinitions: obj =
+    emitJsExpr
+        ()
+        """[
         {"type": "moo_int", "message0": "%1", "args0": [{"type": "field_number", "name": "NUM", "value": 0, "precision": 1}], "output": null, "style": "math_blocks"},
         {"type": "moo_float", "message0": "%1", "args0": [{"type": "field_number", "name": "NUM", "value": 0}], "output": null, "style": "math_blocks"},
         {"type": "moo_string", "message0": "\"%1\"", "args0": [{"type": "field_input", "name": "TEXT", "text": ""}], "output": null, "style": "text_blocks"},
@@ -136,8 +153,15 @@ emitJsStatement
         "previousStatement": null, "nextStatement": null, "style": "variable_blocks"},
         {"type": "moo_comment", "message0": "# %1", "args0": [{"type": "field_input", "name": "TEXT", "text": ""}],
         "previousStatement": null, "nextStatement": null, "style": "text_blocks"}
-    ]);
-    """
+    ]"""
+
+/// Registers this slice's block set and extension with Blockly - call once,
+/// before mounting any workspace, mirroring `Monaco.registerMoocodeLanguage`'s
+/// own "register once, create/inject as many times as needed afterward"
+/// shape.
+let register () : unit =
+    blockly?Extensions?register ("moo_call_extra_state", extraStateExtensionFn)
+    blockly?common?defineBlocksWithJsonArray (blockDefinitions)
 
 /// One flyout-per-category toolbox listing every block above. `moo_binary`
 /// is listed twice (once per category it's genuinely useful from,
@@ -213,20 +237,49 @@ let inject (container: Browser.Types.HTMLElement) : obj =
 /// The workspace's current state as JSON text (`BlocklyJson.parseJsonText`
 /// on the caller's side turns this into a `JsonValue`) - `Blockly.
 /// serialization.workspaces.save` already returns a plain, JSON-safe object,
-/// so `JS.JSON.stringify` is the entire boundary crossing.
+/// so crossing the `obj`/text boundary is just `JS.JSON.stringify`.
+///
+/// `BlocklyJson.fs` only knows about one root block's own chain (a single
+/// statement's JSON with a `next` link to the rest) - it never needs to
+/// know about Blockly's own outer workspace-state envelope
+/// (`{"blocks": {"languageVersion": ..., "blocks": [...one entry per
+/// *top-level* block...]}}`, confirmed against a real serialized save).
+/// Un/wrapping that envelope - the one piece of real workspace-state shape
+/// this slice's toolbox always produces exactly one root block for - is
+/// this file's own job, not `BlocklyJson.fs`'s. An empty workspace (the
+/// user deleted every block) has no root block to report at all, so this
+/// returns `""` rather than some placeholder JSON - `App.fs`'s own
+/// `blocklyStateToText` treats that as "an empty verb body," matching
+/// `BlocklyJson.stmtsToJson []`'s own `None` (no root block to build) on
+/// the way in.
 let getStateText (workspace: obj) : string =
     let state = blockly?serialization?workspaces?save (workspace)
-    JS.JSON.stringify state
+    let blocksHolder = state?blocks
+
+    if isNullOrUndefined blocksHolder then
+        ""
+    else
+        let rootBlocks: obj[] = blocksHolder?blocks
+
+        if isNullOrUndefined rootBlocks || rootBlocks.Length = 0 then
+            ""
+        else
+            JS.JSON.stringify rootBlocks.[0]
 
 /// Replaces the workspace's entire contents with `stateText`
-/// (`BlocklyJson.toJsonText`'s own output) - clears first (`.load` itself
-/// only adds/updates blocks named in `state`, it doesn't remove ones absent
-/// from it), matching the "Edit as list/map" toggle's own "Apply overwrites
-/// wholesale" interaction, not an incremental merge.
+/// (`BlocklyJson.toJsonText`'s own output, or `""` for an empty verb body -
+/// see `getStateText`'s own comment on the envelope this wraps it in)-
+/// clears first (`.load` itself only adds/updates blocks named in `state`,
+/// it doesn't remove ones absent from it), matching the "Edit as list/map"
+/// toggle's own "Apply overwrites wholesale" interaction, not an
+/// incremental merge.
 let loadStateText (workspace: obj) (stateText: string) : unit =
     workspace?clear ()
-    let state = JS.JSON.parse stateText
-    blockly?serialization?workspaces?load (state, workspace) |> ignore
+
+    if stateText <> "" then
+        let rootBlock = JS.JSON.parse stateText
+        let state = createObj [ "blocks" ==> createObj [ "languageVersion" ==> 0; "blocks" ==> [| rootBlock |] ] ]
+        blockly?serialization?workspaces?load (state, workspace) |> ignore
 
 /// Fires `listener` on every workspace mutation (block create/change/move/
 /// delete, and others this slice doesn't need to distinguish - re-deriving

@@ -208,3 +208,44 @@ let ``call arguments are recovered by ARGi presence, not a reported count - what
     match jsonToValue json with
     | Some(VCall("tostr", [ AArg(VIntLit 1L) ])) -> ()
     | other -> Assert.Fail(sprintf "expected a single-argument VCall, got %A" other)
+
+// ---------------------------------------------------------------------------
+// isFullyMappable - a real gate is required before ever calling
+// stmtsToJson/loadStateText: Blocks.isFullyRepresentable alone isn't enough,
+// since it reflects Blocks.fs's own wider coverage (for/fork/try/scatter/
+// catch all have real BlockStmt cases there), not this module's smaller,
+// real-Blockly-block-backed subset. Confirmed live (see BlocklyEditor.fs's
+// own doc comment) that skipping this check lets an out-of-subset
+// construct reach a real Blockly workspace and throw "Invalid block
+// definition for type: moo_unsupported" instead of failing gracefully.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``isFullyMappable is true for every construct this module actually maps to a real block`` () =
+    let blocks =
+        [ While(
+              Some "loop",
+              Binary(Lt, id_ "i", IntLit 10L),
+              [ If([ (Binary(Eq, id_ "i", IntLit 0L), [ ExprStmt(Assign(id_ "x", IntLit 1L)) ]) ], None)
+                ExprStmt(StrLit "a comment")
+                ExprStmt(Call("tostr", [ Normal(id_ "i") ], 1, 1)) ]
+          ) ]
+        |> astToBlocks
+
+    Assert.True(isFullyMappable blocks)
+
+[<Fact>]
+let ``isFullyMappable is false for a construct Blocks.fs supports but this module's block set doesn't`` () =
+    // ForRange has a real BlockStmt case (SForRange) in Blocks.fs, but no
+    // real Blockly block type in Client/BlocklyEditor.fs for this slice -
+    // Blocks.isFullyRepresentable alone would wrongly say this is fine.
+    let forLoop = ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ])
+    Assert.True(isFullyRepresentable [ forLoop ])
+    Assert.False(isFullyMappable (astToBlocks [ forLoop ]))
+
+[<Fact>]
+let ``isFullyMappable is false when the unmappable construct is nested arbitrarily deep`` () =
+    let stmts =
+        [ While(None, id_ "cond", [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, Range(IntLit 1L, IntLit 2L))) ]) ], None) ]) ]
+
+    Assert.False(isFullyMappable (astToBlocks stmts))
