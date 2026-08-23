@@ -191,6 +191,32 @@ let ``a computed-name verb call is still out of scope and round-trips via the Un
     assertRoundTrips [ stmt ]
 
 [<Fact>]
+let ``a bare string-literal statement is recognized as a comment block, not a generic expression block`` () =
+    let commentStmt = ExprStmt(StrLit "this explains the next bit")
+
+    match stmtToBlock commentStmt with
+    | SComment "this explains the next bit" -> ()
+    | other -> Assert.Fail(sprintf "expected SComment, got %A" other)
+
+    assertRoundTrips [ commentStmt ]
+
+[<Fact>]
+let ``a comment statement nested inside if/while bodies still round-trips as a comment, not swallowed by the generic case`` () =
+    let stmts =
+        [ While(
+              None,
+              id_ "cond",
+              [ ExprStmt(StrLit "loop setup")
+                If([ (id_ "cond2", [ ExprStmt(StrLit "the happy path") ]) ], Some [ ExprStmt(StrLit "the fallback") ]) ]
+          ) ]
+
+    match stmtToBlock (List.head stmts) with
+    | SWhile(None, _, [ SComment "loop setup"; SIf([ (_, [ SComment "the happy path" ]) ], Some [ SComment "the fallback" ]) ]) -> ()
+    | other -> Assert.Fail(sprintf "expected nested SComment blocks, got %A" other)
+
+    assertRoundTrips stmts
+
+[<Fact>]
 let ``isFullyRepresentable is true for a verb body with no unsupported constructs`` () =
     let stmts =
         [ While(

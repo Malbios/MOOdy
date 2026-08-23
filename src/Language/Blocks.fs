@@ -126,6 +126,18 @@ and BlockStmt =
     | SBreak of string option
     | SContinue of string option
     | SExpr of BlockValue
+    /// A bare string-literal expression statement (`"note";`) - a common
+    /// MOO comment idiom (no dedicated comment syntax survives a save at
+    /// all: `/* ... */` is discarded by the MOO server's own
+    /// compile/decompile cycle, confirmed directly against
+    /// `ToastStunt/src` - `set_verb_code()` compiles to bytecode with no
+    /// comment field anywhere, and `verb_code()` decompiles that back to
+    /// text). This idiom survives because it's a genuine statement, not
+    /// lexer trivia - `ExprStmt(StrLit s)` already round-trips correctly
+    /// today via the generic `SExpr(VStrLit s)` case; this is purely a
+    /// visualization distinction so a future Blockly UI can render it
+    /// comment-styled instead of as a generic "evaluate and discard" block.
+    | SComment of string
     | STryExcept of body: BlockStmt list * arms: BlockExceptArm list
     | STryFinally of body: BlockStmt list * handler: BlockStmt list
     /// The escape hatch - `ErrorStmt` only (see the module's own doc
@@ -245,6 +257,7 @@ let rec stmtToBlock (stmt: Stmt) : BlockStmt =
     | Return e -> SReturn(e |> Option.map exprToBlock)
     | Break name -> SBreak name
     | Continue name -> SContinue name
+    | ExprStmt(StrLit s) -> SComment s
     | ExprStmt e -> SExpr(exprToBlock e)
     | TryExcept(body, arms) -> STryExcept(body |> List.map stmtToBlock, arms |> List.map exceptArmToBlock)
     | TryFinally(body, handler) -> STryFinally(body |> List.map stmtToBlock, handler |> List.map stmtToBlock)
@@ -273,6 +286,7 @@ let rec blockToStmt (block: BlockStmt) : Stmt =
     | SBreak name -> Break name
     | SContinue name -> Continue name
     | SExpr v -> ExprStmt(blockToExpr v)
+    | SComment s -> ExprStmt(StrLit s)
     | STryExcept(body, arms) -> TryExcept(body |> List.map blockToStmt, arms |> List.map blockToExceptArm)
     | STryFinally(body, handler) -> TryFinally(body |> List.map blockToStmt, handler |> List.map blockToStmt)
     | SUnsupported stmt -> stmt
@@ -354,6 +368,7 @@ let rec private stmtIsFullyRepresentable (stmt: BlockStmt) : bool =
     | SBreak _
     | SContinue _ -> true
     | SExpr v -> valueIsFullyRepresentable v
+    | SComment _ -> true
     | STryExcept(body, arms) ->
         (body |> List.forall stmtIsFullyRepresentable)
         && (arms |> List.forall (fun arm -> codesIsFullyRepresentable arm.Codes && arm.Body |> List.forall stmtIsFullyRepresentable))
