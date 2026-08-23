@@ -15,16 +15,28 @@
 /// family with an `OP` dropdown (not one block type per operator, matching
 /// how Blockly's own `math_arithmetic`/`logic_compare` already work).
 ///
-/// `moo_call`/`moo_verbcall`/`moo_list` (the three variable-arity
-/// constructs) get a small **fixed** number of `ARGi` sockets rather than a
-/// full drag-based mutator - a deliberate first-slice simplification (see
-/// `BlocklyJson.fs`'s own doc comment on why this is still correct: the
-/// argument count is recovered from which sockets are actually connected,
-/// not from a reported count). `moo_call_extra_state` is a tiny registered
-/// extension (not a full mutator) that only exists so `splices` (was
-/// argument `i` written with `@`) survives a real save/load cycle - nothing
-/// in this slice's toolbox actually constructs a splice argument yet, but a
-/// verb round-tripped in from real text might already have one.
+/// `moo_call`/`moo_verbcall`/`moo_list`/`moo_except_arm`/`moo_catch` (the
+/// fixed-arity-with-splices constructs) get a small **fixed** number of
+/// `ARGi`/`CODEi` sockets rather than a full drag-based mutator dialog - a
+/// deliberate simplification (see `BlocklyJson.fs`'s own doc comment on why
+/// this is still correct: the argument count is recovered from which
+/// sockets are actually connected, not from a reported count).
+/// `moo_call_extra_state` is a tiny registered extension that only exists
+/// so `splices` (was argument/code `i` written with `@`) survives a real
+/// save/load cycle - it defines `saveExtraState`/`loadExtraState` but no
+/// `compose`/`decompose`, so it never shows a mutator-dialog gear icon.
+/// **Must be wired up via each block's own `"mutator"` JSON field, not
+/// `"extensions"`** - confirmed live: Blockly's own `Block.jsonInit`
+/// applies `"extensions"` entries with `isMutator = false`, which runs a
+/// strict sanity check requiring the block's own mutator-related
+/// properties (`saveExtraState`/`loadExtraState`/etc.) to be *identical*
+/// before and after the extension runs; since this extension's whole job
+/// is to *add* `saveExtraState`/`loadExtraState` where none existed, that
+/// check always fails ("mutation properties changed when applying a
+/// non-mutator extension"), thrown the moment any block using it is
+/// constructed (fresh from the toolbox, or loaded from a saved state) -
+/// `"mutator"` applies with `isMutator = true` instead, which skips that
+/// specific check.
 module Client.BlocklyEditor
 
 open Fable.Core
@@ -40,8 +52,19 @@ let private blockly: obj = importAll "blockly"
 /// `fields`/`inputs` keys exactly (`NUM`/`TEXT`/`CODE`/`NAME`/`OP`/`LABEL`,
 /// `LEFT`/`RIGHT`/`VALUE`/`COND`/`THEN`/`ELSE`/`TARGET`/`RECEIVER`/`INDEX`/
 /// `BODY`/`ARG0..ARG3`/`VAR`/`INDEXVAR`/`SOURCE`/`LO`/`HI`/`DELAY`/
-/// `HANDLER`/`KEY0..KEY3`/`VAL0..VAL3`) - this module and that one must
-/// never drift apart on those spellings.
+/// `HANDLER`/`KEY0..KEY3`/`VAL0..VAL3`/`KIND`/`CODE0..CODE3`/`TRY`/
+/// `FALLBACK`/`ARMS`/`ITEM0..ITEM3`/`DEFAULT`) - this module and that one
+/// must never drift apart on those spellings.
+///
+/// `moo_except_arm` chains into `moo_try_except`'s own `ARMS` slot via a
+/// *typed* `previousStatement`/`nextStatement` check (both declare
+/// `"moo_except_arm"`, not `null`) - it never chains into an ordinary
+/// statement body. `moo_scatter_item` is the value-side equivalent: a
+/// typed `output`/`check` pair (`"moo_scatter_item"`) so it only plugs
+/// into `moo_scatter`'s own `ITEMi` sockets, never a real expression
+/// input. Both reuse `moo_call_extra_state` for their own fixed
+/// `CODE0..CODE3` sockets' splice flags - the extension is registered
+/// once and is not tied to a single block type.
 /// `moo_call`/`moo_verbcall`/`moo_list` each get exactly 4 fixed `ARGi`
 /// argument sockets (`ARG0`..`ARG3`) - this constant documents that number
 /// everywhere it matters (`BlocklyJson.fs` doesn't hardcode it at all,
@@ -124,18 +147,18 @@ let private blockDefinitions: obj =
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
         ], "message2": ")",
-        "extensions": ["moo_call_extra_state"], "inputsInline": true, "output": null, "style": "procedure_blocks"},
+        "mutator": "moo_call_extra_state", "inputsInline": true, "output": null, "style": "procedure_blocks"},
         {"type": "moo_call", "message0": "%1 (", "args0": [
             {"type": "field_input", "name": "NAME", "text": "func"}
         ], "message1": "%1 %2 %3 %4", "args1": [
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
         ], "message2": ")",
-        "extensions": ["moo_call_extra_state"], "inputsInline": true, "output": null, "style": "procedure_blocks"},
+        "mutator": "moo_call_extra_state", "inputsInline": true, "output": null, "style": "procedure_blocks"},
         {"type": "moo_list", "message0": "{ %1 %2 %3 %4 }", "args0": [
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
-        ], "extensions": ["moo_call_extra_state"], "inputsInline": true, "output": null, "style": "list_blocks"},
+        ], "mutator": "moo_call_extra_state", "inputsInline": true, "output": null, "style": "list_blocks"},
         {"type": "moo_if", "message0": "if %1", "args0": [{"type": "input_value", "name": "COND"}],
         "message1": "then %1", "args1": [{"type": "input_statement", "name": "THEN"}],
         "message2": "else %1", "args2": [{"type": "input_statement", "name": "ELSE"}],
@@ -182,7 +205,37 @@ let private blockDefinitions: obj =
             {"type": "input_value", "name": "KEY1"}, {"type": "input_value", "name": "VAL1"},
             {"type": "input_value", "name": "KEY2"}, {"type": "input_value", "name": "VAL2"},
             {"type": "input_value", "name": "KEY3"}, {"type": "input_value", "name": "VAL3"}
-        ], "inputsInline": true, "output": null, "style": "list_blocks"}
+        ], "inputsInline": true, "output": null, "style": "list_blocks"},
+        {"type": "moo_except_arm", "message0": "except %1 (%2) %3 %4 %5 %6", "args0": [
+            {"type": "field_input", "name": "NAME", "text": ""},
+            {"type": "field_dropdown", "name": "KIND", "options": [["any", "ANY"], ["codes", "CODES"]]},
+            {"type": "input_value", "name": "CODE0"}, {"type": "input_value", "name": "CODE1"},
+            {"type": "input_value", "name": "CODE2"}, {"type": "input_value", "name": "CODE3"}
+        ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "previousStatement": "moo_except_arm", "nextStatement": "moo_except_arm",
+        "mutator": "moo_call_extra_state", "style": "logic_blocks"},
+        {"type": "moo_try_except", "message0": "try %1", "args0": [{"type": "input_statement", "name": "BODY"}],
+        "message1": "except %1", "args1": [{"type": "input_statement", "name": "ARMS", "check": "moo_except_arm"}],
+        "previousStatement": null, "nextStatement": null, "style": "logic_blocks"},
+        {"type": "moo_catch", "message0": "catch %1", "args0": [{"type": "input_value", "name": "TRY"}],
+        "message1": "codes %1 %2 %3 %4 %5", "args1": [
+            {"type": "field_dropdown", "name": "KIND", "options": [["any", "ANY"], ["codes", "CODES"]]},
+            {"type": "input_value", "name": "CODE0"}, {"type": "input_value", "name": "CODE1"},
+            {"type": "input_value", "name": "CODE2"}, {"type": "input_value", "name": "CODE3"}
+        ], "message2": "fallback %1", "args2": [{"type": "input_value", "name": "FALLBACK"}],
+        "mutator": "moo_call_extra_state", "output": null, "style": "logic_blocks"},
+        {"type": "moo_scatter_item", "message0": "%1 %2 %3", "args0": [
+            {"type": "field_dropdown", "name": "KIND", "options": [["required", "REQUIRED"], ["optional", "OPTIONAL"], ["rest", "REST"]]},
+            {"type": "field_input", "name": "NAME", "text": "x"},
+            {"type": "input_value", "name": "DEFAULT"}
+        ], "inputsInline": true, "output": "moo_scatter_item", "style": "variable_blocks"},
+        {"type": "moo_scatter", "message0": "{ %1 %2 %3 %4 } = %5", "args0": [
+            {"type": "input_value", "name": "ITEM0", "check": "moo_scatter_item"},
+            {"type": "input_value", "name": "ITEM1", "check": "moo_scatter_item"},
+            {"type": "input_value", "name": "ITEM2", "check": "moo_scatter_item"},
+            {"type": "input_value", "name": "ITEM3", "check": "moo_scatter_item"},
+            {"type": "input_value", "name": "VALUE"}
+        ], "inputsInline": true, "output": null, "style": "variable_blocks"}
     ]"""
 
 /// Registers this slice's block set and extension with Blockly - call once,
@@ -209,6 +262,9 @@ let private toolbox: obj =
                 {"kind": "block", "type": "moo_cond"},
                 {"kind": "block", "type": "moo_if"},
                 {"kind": "block", "type": "moo_try_finally"},
+                {"kind": "block", "type": "moo_try_except"},
+                {"kind": "block", "type": "moo_except_arm"},
+                {"kind": "block", "type": "moo_catch"},
                 {"kind": "block", "type": "moo_binary", "fields": {"OP": "EQ"}},
                 {"kind": "block", "type": "moo_unary", "fields": {"OP": "NOT"}}
             ]},
@@ -251,7 +307,9 @@ let private toolbox: obj =
             {"kind": "category", "name": "Variables", "colour": "330", "contents": [
                 {"kind": "block", "type": "moo_ident"},
                 {"kind": "block", "type": "moo_assign"},
-                {"kind": "block", "type": "moo_expr"}
+                {"kind": "block", "type": "moo_expr"},
+                {"kind": "block", "type": "moo_scatter"},
+                {"kind": "block", "type": "moo_scatter_item"}
             ]}
         ]
     })"""

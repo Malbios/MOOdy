@@ -506,16 +506,16 @@ module private BlocklyToggle =
     /// `ErrorStmt` anywhere already makes both checks below fail, so no
     /// separate check is needed for that) or it uses a construct outside
     /// this slice's real Blockly block set. Gates on `BlocklyJson.
-    /// isFullyMappable`, not `Blocks.isFullyRepresentable` - the latter
-    /// reflects `Blocks.fs`'s own wider coverage (for/fork/try/scatter/
-    /// catch all have real `BlockStmt` cases there), but this slice's
-    /// actual JS-side block set (`Client/BlocklyEditor.fs`) is smaller;
-    /// confirmed live that skipping this check lets a for-loop verb reach
-    /// `loadStateText` and throw `Invalid block definition for type:
-    /// moo_unsupported`, a real crash, not a graceful refusal. What to do
-    /// about an unsupported verb (refuse outright, as here, vs.
-    /// warn-and-fall-back, vs. something else) is still an open product
-    /// question - see the card's own notes.
+    /// isFullyMappable`, not `Blocks.isFullyRepresentable` - after slice C,
+    /// the only remaining gap between them is computed-name `Prop`/
+    /// `VerbCall` (`Blocks.fs`'s own permanent `VUnsupported` escape hatch -
+    /// unrepresentable there too, not just here); confirmed live that
+    /// skipping this check lets an out-of-subset verb reach `loadStateText`
+    /// and throw `Invalid block definition for type: moo_unsupported`, a
+    /// real crash, not a graceful refusal. What to do about an unsupported
+    /// verb (refuse outright, as here, vs. warn-and-fall-back, vs.
+    /// something else) is still an open product question - see the card's
+    /// own notes.
     let private textToBlocklyState (text: string) : Result<string, string> =
         match Lexer.tokenize text with
         | { Error = Some err } -> Error(sprintf "Can't switch to blocks - this verb doesn't lex cleanly (%A)." err)
@@ -524,7 +524,7 @@ module private BlocklyToggle =
 
             if not (BlocklyJson.isFullyMappable blocks) then
                 Error
-                    "Can't switch to blocks - this verb uses a construct blocks don't support yet (a for/fork/try loop, scatter-assignment, the catch-expression, a computed property/verb name, or a parse error), or doesn't parse cleanly right now."
+                    "Can't switch to blocks - this verb uses a construct blocks don't support yet (a computed property/verb name, or a parse error), or doesn't parse cleanly right now."
             else
                 // `None` here just means an empty verb body (`stmtsToJson
                 // []`, `BlocklyEditor.loadStateText`'s own "" case) - not a

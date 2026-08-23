@@ -8,23 +8,34 @@
 /// real JS object to/from `JsonValue` lives in `src/Client/BlocklyEditor.fs`
 /// - this module never touches `obj`/dynamic JS at all.
 ///
-/// Covers a deliberately smaller construct set than `Blocks.fs`'s full
-/// width (see that module's own doc comment for the full list) - every
-/// literal kind, `Ident`, `Binary`/`Unary` (one Blockly block type per
-/// family with an `OP` field, not one block type per operator), `Cond`,
-/// `Assign`, `Prop`/`VerbCall`/`Call`, `ListLit`, `Index`, `Range`,
-/// `FirstIndex`/`LastIndex`, `MapLit`, `If`, `While`, `ForList`, `ForRange`,
-/// `Fork`, `TryFinally`, `Return`/`Break`/`Continue`, `ExprStmt`,
-/// `SComment`. Still out of scope (a genuine variable-arity shape needing
-/// either a real Blockly mutator or a fixed-max-with-kind-selector design,
-/// not attempted yet): `TryExcept` (a variable number of `except` arms),
-/// `Scatter` (a variable number of independently required/optional/rest
-/// items), `Catch`'s explicit code list, and computed-name `Prop`/
-/// `VerbCall`. Anything out of scope maps one-way to a
+/// Covers every construct in `Blocks.fs` (see that module's own doc
+/// comment for the full list) except one permanently out-of-scope
+/// exception: computed-name `Prop`/`VerbCall` (`obj.(expr)`/
+/// `obj:(expr)(...)`) - unrepresentable by design, since it stays on
+/// `Blocks.fs`'s own `VUnsupported` escape hatch (see that module's doc
+/// comment on why). Everything else - every literal kind, `Ident`,
+/// `Binary`/`Unary` (one Blockly block type per family with an `OP`
+/// field, not one block type per operator), `Cond`, `Assign`,
+/// `Prop`/`VerbCall`/`Call`, `ListLit`, `Index`, `Range`,
+/// `FirstIndex`/`LastIndex`, `MapLit`, `If`, `While`, `ForList`,
+/// `ForRange`, `Fork`, `TryFinally`, `TryExcept`, `Scatter`, `Catch` (both
+/// the bare `ANY` form and an explicit code list), `Return`/`Break`/
+/// `Continue`, `ExprStmt`, `SComment` - maps to a real Blockly block type.
+/// A `Prop`/`VerbCall` carrying a computed name still maps one-way to a
 /// `moo_unsupported`/`moo_unsupported_expr` placeholder carrying a debug
-/// string - not meant to ever actually reach a real workspace in practice,
-/// since the eventual UI gates the toggle on `isFullyMappable` first; it
-/// exists only so this module's functions stay total.
+/// string - not meant to ever actually reach a real workspace in
+/// practice, since the eventual UI gates the toggle on `isFullyMappable`
+/// first; it exists only so this module's functions stay total.
+///
+/// `TryExcept`'s except-arms are a variable-arity list that reuses
+/// Blockly's own statement-`next`-chain mechanism directly (`armsToJson`/
+/// `jsonToArms` mirror `stmtsToJson`/`jsonToStmts` almost exactly, just
+/// over `BlockExceptArm list` instead of `BlockStmt list`) - genuinely
+/// unbounded, no fixed cap. `Scatter`'s items and `Catch`/an except-arm's
+/// explicit `Codes` both use the same **fixed-max-with-kind-selector**
+/// trick as `Call`/`VerbCall`/`ListLit`'s `ARG0..ARG3` and `MapLit`'s
+/// `KEY0..KEY3`/`VAL0..VAL3` (see below) - a small fixed number of
+/// sockets, not a real drag-based mutator.
 ///
 /// Blockly's real serialized shape has no first-class way to represent a
 /// variable number of child value-inputs (an `if`/`elseif` chain, a call's
@@ -177,7 +188,12 @@ let private makeBlock
 
 let private valueSlot (v: JsonValue) : JsonValue = JVObject [ "block", v ]
 
-let rec private argsShape (args: BlockArg list) : (string * JsonValue) list * (string * JsonValue) list =
+/// `prefix` is `"ARG"` for `Call`/`VerbCall`/`ListLit`'s argument lists, or
+/// `"CODE"` for a `Catch`/except-arm's `Codes` (both are just "a fixed
+/// number of named value sockets, plus a splice flag per socket" - the
+/// same shape, only the socket-name prefix and the block-level meaning
+/// differ).
+let rec private argsShape (prefix: string) (args: BlockArg list) : (string * JsonValue) list * (string * JsonValue) list =
     let argValue =
         function
         | AArg v -> v
@@ -188,12 +204,12 @@ let rec private argsShape (args: BlockArg list) : (string * JsonValue) list * (s
         | AArg _ -> false
         | ASplice _ -> true
 
-    let inputs = args |> List.mapi (fun i a -> sprintf "ARG%d" i, valueSlot (valueToJson (argValue a)))
+    let inputs = args |> List.mapi (fun i a -> sprintf "%s%d" prefix i, valueSlot (valueToJson (argValue a)))
 
     // No "count" field - the real Blockly-side blocks have a fixed number
-    // of ARGi sockets (see BlocklyEditor.fs), and the argument count is
-    // recovered from which ones are actually connected (`jsonToValue`'s
-    // `args()`, below) - a real Blockly workspace save only round-trips
+    // of ARGi/CODEi sockets (see BlocklyEditor.fs), and the argument count
+    // is recovered from which ones are actually connected (`jsonToValue`'s
+    // `argsAt`, below) - a real Blockly workspace save only round-trips
     // whatever a block's own `saveExtraState` reports, and a fixed-arity
     // block has no reason to report a redundant count. `splices` still
     // needs a home here (no other field could carry "was this one `@`-
@@ -223,13 +239,13 @@ and valueToJson (value: BlockValue) : JsonValue =
     | VAssign(target, value) -> obj "moo_assign" [] (v1 "TARGET" target @ v1 "VALUE" value) []
     | VProp(receiver, name) -> obj "moo_prop" [ "NAME", JVString name ] (v1 "RECEIVER" receiver) []
     | VVerbCall(receiver, name, args) ->
-        let inputs, extraState = argsShape args
+        let inputs, extraState = argsShape "ARG" args
         obj "moo_verbcall" [ "NAME", JVString name ] (v1 "RECEIVER" receiver @ inputs) extraState
     | VCall(name, args) ->
-        let inputs, extraState = argsShape args
+        let inputs, extraState = argsShape "ARG" args
         obj "moo_call" [ "NAME", JVString name ] inputs extraState
     | VListLit args ->
-        let inputs, extraState = argsShape args
+        let inputs, extraState = argsShape "ARG" args
         obj "moo_list" [] inputs extraState
     | VIndex(e, i) -> obj "moo_index" [] (v1 "VALUE" e @ v1 "INDEX" i) []
     | VRange(lo, hi) -> obj "moo_range" [] (v1 "LO" lo @ v1 "HI" hi) []
@@ -240,9 +256,41 @@ and valueToJson (value: BlockValue) : JsonValue =
             pairs |> List.mapi (fun i (k, v) -> v1 (sprintf "KEY%d" i) k @ v1 (sprintf "VAL%d" i) v) |> List.concat
 
         obj "moo_map" [] inputs []
-    | VScatter _
-    | VCatch _
+    | VCatch(tryValue, codes, fallback) ->
+        let kindFields, codeInputs, codeExtra = codesToJson codes
+        let fallbackInput = fallback |> Option.map (v1 "FALLBACK") |> Option.defaultValue []
+        obj "moo_catch" kindFields (v1 "TRY" tryValue @ codeInputs @ fallbackInput) codeExtra
+    | VScatter(items, v) ->
+        let itemInputs = items |> List.mapi (fun i item -> sprintf "ITEM%d" i, valueSlot (scatterItemToJson item))
+        obj "moo_scatter" [] (itemInputs @ v1 "VALUE" v) []
     | VUnsupported _ -> obj "moo_unsupported_expr" [ "DEBUG", JVString(sprintf "%A" value) ] [] []
+
+/// Shared by `VCatch` and `moo_except_arm` (an except-arm's own `Codes`) -
+/// both need "a `KIND` dropdown (`ANY`/`CODES`) plus fixed `CODE0..CODEn`
+/// sockets, with `splices` traveling the same way `ARG0..ARGn` already
+/// does" - so this is just `argsShape "CODE"` plus the `KIND` field.
+and private codesToJson (codes: BlockCodes) : (string * JsonValue) list * (string * JsonValue) list * (string * JsonValue) list =
+    match codes with
+    | BAnyCode -> [ "KIND", JVString "ANY" ], [], []
+    | BCodes args ->
+        let inputs, extraState = argsShape "CODE" args
+        [ "KIND", JVString "CODES" ], inputs, extraState
+
+/// A scatter item isn't itself a real MOO value - it's a structural
+/// record (`required`/`optional`/`rest`, plus an optional default) - so it
+/// gets its own small block type (`moo_scatter_item`), deliberately NOT
+/// routed through the general `valueToJson`/`jsonToValue` dispatch above
+/// (see `moo_scatter_item`'s own typed `output` check in `BlocklyEditor.fs`
+/// - it only ever plugs into `moo_scatter`'s own `ITEMi` sockets).
+and private scatterItemToJson (item: BlockScatterItem) : JsonValue =
+    let makeItem kind name defaultInput =
+        JVObject(makeBlock "moo_scatter_item" [ "KIND", JVString kind; "NAME", JVString name ] defaultInput [])
+
+    match item with
+    | BRequired name -> makeItem "REQUIRED" name []
+    | BRest name -> makeItem "REST" name []
+    | BOptional(name, def) ->
+        makeItem "OPTIONAL" name (def |> Option.map (fun d -> [ "DEFAULT", valueSlot (valueToJson d) ]) |> Option.defaultValue [])
 
 /// The reverse of `valueToJson` for the covered subset - `None` for a
 /// block type this slice doesn't map (including `moo_unsupported_expr`,
@@ -260,25 +308,8 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
     let value1 (name: string) : BlockValue option = inputBlock name |> Option.bind jsonToValue
 
     // Walks ARG0, ARG1, ... until the first *missing* input, treating that
-    // as "end of arguments" - matching the real Blockly-side blocks' fixed,
-    // left-to-right-filled ARGi sockets (see BlocklyEditor.fs), rather than
-    // depending on a separately-reported count that a real workspace save
-    // has no reason to carry (see `argsShape`'s own comment above).
-    let args () : BlockArg list option =
-        let splices =
-            field "splices" extraState |> Option.map asArray |> Option.map (List.choose asBool) |> Option.defaultValue []
-
-        let rec loop (i: int) (acc: BlockArg list) : BlockArg list option =
-            match inputBlock (sprintf "ARG%d" i) with
-            | None -> Some(List.rev acc)
-            | Some blockJson ->
-                match jsonToValue blockJson with
-                | None -> None
-                | Some v ->
-                    let isSplice = splices |> List.tryItem i |> Option.defaultValue false
-                    loop (i + 1) ((if isSplice then ASplice v else AArg v) :: acc)
-
-        loop 0 []
+    // as "end of arguments" - see `argsAt`'s own comment below.
+    let args () : BlockArg list option = argsAt "ARG" inputBlock extraState
 
     // Walks KEY0/VAL0, KEY1/VAL1, ... until the first missing pair - same
     // "fixed, left-to-right-filled sockets" convention as `args()` above.
@@ -293,6 +324,23 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
                     | Some v -> loop (i + 1) ((k, v) :: acc)
                     | None -> None
                 | _ -> None
+
+        loop 0 []
+
+    // Walks ITEM0, ITEM1, ... until the first missing item, same
+    // "fixed, left-to-right-filled sockets" convention as `args()` above -
+    // each ITEMi holds a `moo_scatter_item` block, read via
+    // `jsonToScatterItem` rather than the general `jsonToValue` dispatch
+    // (a scatter item isn't a `BlockValue` - see `scatterItemToJson`'s own
+    // comment).
+    let scatterItems () : BlockScatterItem list option =
+        let rec loop (i: int) (acc: BlockScatterItem list) : BlockScatterItem list option =
+            match inputBlock (sprintf "ITEM%d" i) with
+            | None -> Some(List.rev acc)
+            | Some itemJson ->
+                match jsonToScatterItem itemJson with
+                | Some item -> loop (i + 1) (item :: acc)
+                | None -> None
 
         loop 0 []
 
@@ -344,6 +392,62 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
     | Some "moo_firstindex" -> Some VFirstIndex
     | Some "moo_lastindex" -> Some VLastIndex
     | Some "moo_map" -> mapPairs () |> Option.map VMapLit
+    | Some "moo_catch" ->
+        let kind = field "KIND" fields |> Option.bind asString
+
+        match value1 "TRY", codesFromJson kind inputBlock extraState with
+        | Some tryV, Some codes -> Some(VCatch(tryV, codes, value1 "FALLBACK"))
+        | _ -> None
+    | Some "moo_scatter" ->
+        match scatterItems (), value1 "VALUE" with
+        | Some items, Some v -> Some(VScatter(items, v))
+        | _ -> None
+    | _ -> None
+
+/// Shared by `jsonToValue`'s own `args()` (prefix `"ARG"`) and
+/// `codesFromJson`'s explicit-codes case (prefix `"CODE"`) - the reverse of
+/// `argsShape`, walking fixed, left-to-right-filled `<prefix>i` sockets
+/// until the first absent one.
+and private argsAt (prefix: string) (inputBlock: string -> JsonValue option) (extraState: (string * JsonValue) list) : BlockArg list option =
+    let splices =
+        field "splices" extraState |> Option.map asArray |> Option.map (List.choose asBool) |> Option.defaultValue []
+
+    let rec loop (i: int) (acc: BlockArg list) : BlockArg list option =
+        match inputBlock (sprintf "%s%d" prefix i) with
+        | None -> Some(List.rev acc)
+        | Some blockJson ->
+            match jsonToValue blockJson with
+            | None -> None
+            | Some v ->
+                let isSplice = splices |> List.tryItem i |> Option.defaultValue false
+                loop (i + 1) ((if isSplice then ASplice v else AArg v) :: acc)
+
+    loop 0 []
+
+/// The reverse of `codesToJson` - `kind` is the raw `"KIND"` field value
+/// (`"ANY"`/`"CODES"`), and `inputBlock`/`extraState` are the *caller's*
+/// own (a `moo_catch` block's, or a `moo_except_arm` block's) - shared by
+/// both since they encode `BlockCodes` identically.
+and private codesFromJson (kind: string option) (inputBlock: string -> JsonValue option) (extraState: (string * JsonValue) list) : BlockCodes option =
+    match kind with
+    | Some "ANY" -> Some BAnyCode
+    | Some "CODES" -> argsAt "CODE" inputBlock extraState |> Option.map BCodes
+    | _ -> None
+
+/// The reverse of `scatterItemToJson` - reads one `moo_scatter_item`
+/// block's own `fields`/`inputs` directly, not through the general
+/// `jsonToValue` dispatch (see that function's own comment on why).
+and private jsonToScatterItem (json: JsonValue) : BlockScatterItem option =
+    let itemFields = field "fields" (asFields json) |> Option.map asFields |> Option.defaultValue []
+    let itemInputs = field "inputs" (asFields json) |> Option.map asFields |> Option.defaultValue []
+    let inputBlock (name: string) : JsonValue option = field name itemInputs |> Option.map asFields |> Option.bind (field "block")
+    let name = field "NAME" itemFields |> Option.bind asString
+    let kind = field "KIND" itemFields |> Option.bind asString
+
+    match kind, name with
+    | Some "REQUIRED", Some n -> Some(BRequired n)
+    | Some "REST", Some n -> Some(BRest n)
+    | Some "OPTIONAL", Some n -> Some(BOptional(n, inputBlock "DEFAULT" |> Option.bind jsonToValue))
     | _ -> None
 
 /// `BlockStmt` -> Blockly's real per-block JSON shape, total, WITHOUT its
@@ -378,7 +482,9 @@ let rec private stmtToJsonFields (stmt: BlockStmt) : (string * JsonValue) list =
     | SFork(name, delay, body) ->
         makeBlock "moo_fork" [ "NAME", JVString(name |> Option.defaultValue "") ] (v1 "DELAY" delay @ stmtSlot "BODY" body) []
     | STryFinally(body, handler) -> makeBlock "moo_try_finally" [] (stmtSlot "BODY" body @ stmtSlot "HANDLER" handler) []
-    | STryExcept _
+    | STryExcept(body, arms) ->
+        let armsSlot = arms |> armsToJson |> Option.map (fun j -> [ "ARMS", JVObject [ "block", j ] ]) |> Option.defaultValue []
+        makeBlock "moo_try_except" [] (stmtSlot "BODY" body @ armsSlot) []
     | SUnsupported _ -> makeBlock "moo_unsupported" [ "DEBUG", JVString(sprintf "%A" stmt) ] [] []
 
 /// A statement sequence (a verb body, or any block's nested body) ->
@@ -390,6 +496,33 @@ and stmtsToJson (stmts: BlockStmt list) : JsonValue option =
     | s :: rest ->
         let fields = stmtToJsonFields s
         let fields = fields @ (rest |> stmtsToJson |> Option.map (fun r -> [ "next", JVObject [ "block", r ] ]) |> Option.defaultValue [])
+        Some(JVObject fields)
+
+/// One `except` arm's own JSON, WITHOUT its own `next` chain (`armsToJson`
+/// wires that) - mirrors `stmtToJsonFields` exactly, just for
+/// `BlockExceptArm` instead of `BlockStmt`. Not a `BlockStmt` in its own
+/// right (see `BlocklyEditor.fs`'s `moo_except_arm` - it only ever chains
+/// into a `moo_try_except`'s own typed `ARMS` slot, never an ordinary
+/// statement body).
+and private armToJsonFields (arm: BlockExceptArm) : (string * JsonValue) list =
+    let stmtSlot name body = body |> stmtsToJson |> Option.map (fun j -> [ name, JVObject [ "block", j ] ]) |> Option.defaultValue []
+    let kindFields, codeInputs, codeExtra = codesToJson arm.Codes
+
+    makeBlock
+        "moo_except_arm"
+        ([ "NAME", JVString(arm.Name |> Option.defaultValue "") ] @ kindFields)
+        (codeInputs @ stmtSlot "BODY" arm.Body)
+        codeExtra
+
+/// A `except`-arm sequence -> Blockly's `next`-chained JSON shape, exactly
+/// mirroring `stmtsToJson` for `BlockExceptArm list` instead of
+/// `BlockStmt list`.
+and armsToJson (arms: BlockExceptArm list) : JsonValue option =
+    match arms with
+    | [] -> None
+    | a :: rest ->
+        let fields = armToJsonFields a
+        let fields = fields @ (rest |> armsToJson |> Option.map (fun r -> [ "next", JVObject [ "block", r ] ]) |> Option.defaultValue [])
         Some(JVObject fields)
 
 /// The reverse of `stmtsToJson` - walks one block plus its `next` chain
@@ -439,6 +572,12 @@ let rec jsonToStmts (json: JsonValue) : BlockStmt list option =
             match body "BODY", body "HANDLER" with
             | Some b, Some h -> Some(STryFinally(b, h))
             | _ -> None
+        | Some "moo_try_except" ->
+            let arms = inputBlock "ARMS" |> Option.map jsonToArms |> Option.defaultValue (Some [])
+
+            match body "BODY", arms with
+            | Some b, Some a -> Some(STryExcept(b, a))
+            | _ -> None
         | _ -> None
 
     match this with
@@ -447,6 +586,35 @@ let rec jsonToStmts (json: JsonValue) : BlockStmt list option =
         match field "next" fields |> Option.map asFields |> Option.bind (field "block") with
         | None -> Some [ s ]
         | Some nextJson -> jsonToStmts nextJson |> Option.map (fun rest -> s :: rest)
+
+/// The reverse of `armsToJson` - walks one `moo_except_arm` block plus its
+/// `next` chain into a `BlockExceptArm list`, mirroring `jsonToStmts`
+/// exactly.
+and jsonToArms (json: JsonValue) : BlockExceptArm list option =
+    let fields = asFields json
+    let blockType = field "type" fields |> Option.bind asString
+    let inputs = field "inputs" fields |> Option.map asFields |> Option.defaultValue []
+    let extraState = field "extraState" fields |> Option.map asFields |> Option.defaultValue []
+    let armFields = field "fields" fields |> Option.map asFields |> Option.defaultValue []
+    let inputBlock (name: string) : JsonValue option = field name inputs |> Option.map asFields |> Option.bind (field "block")
+    let body (name: string) : BlockStmt list option = inputBlock name |> Option.map jsonToStmts |> Option.defaultValue (Some [])
+    let strField (name: string) : string option = field name armFields |> Option.bind asString
+    let optStrField (name: string) : string option = match strField name with Some "" -> None | other -> other
+
+    let this: BlockExceptArm option =
+        match blockType with
+        | Some "moo_except_arm" ->
+            match codesFromJson (strField "KIND") inputBlock extraState, body "BODY" with
+            | Some codes, Some b -> Some { Name = optStrField "NAME"; Codes = codes; Body = b }
+            | _ -> None
+        | _ -> None
+
+    match this with
+    | None -> None
+    | Some arm ->
+        match field "next" fields |> Option.map asFields |> Option.bind (field "block") with
+        | None -> Some [ arm ]
+        | Some nextJson -> jsonToArms nextJson |> Option.map (fun rest -> arm :: rest)
 
 // ---------------------------------------------------------------------------
 // JsonValue <-> JSON text. Needed so `Client/BlocklyEditor.fs`'s entire
@@ -686,8 +854,6 @@ let parseJsonText (text: string) : JsonValue option =
 /// alone, before ever calling `stmtsToJson`/`loadStateText`.
 let rec private valueIsFullyMappable (value: BlockValue) : bool =
     match value with
-    | VScatter _
-    | VCatch _
     | VUnsupported _ -> false
     | VIntLit _
     | VFloatLit _
@@ -709,15 +875,28 @@ let rec private valueIsFullyMappable (value: BlockValue) : bool =
     | VIndex(e, i) -> valueIsFullyMappable e && valueIsFullyMappable i
     | VRange(lo, hi) -> valueIsFullyMappable lo && valueIsFullyMappable hi
     | VMapLit pairs -> pairs |> List.forall (fun (k, v) -> valueIsFullyMappable k && valueIsFullyMappable v)
+    | VCatch(tryValue, codes, fallback) ->
+        valueIsFullyMappable tryValue && codesIsFullyMappable codes && fallback |> Option.forall valueIsFullyMappable
+    | VScatter(items, v) -> (items |> List.forall scatterItemIsFullyMappable) && valueIsFullyMappable v
 
 and private argIsFullyMappable (arg: BlockArg) : bool =
     match arg with
     | AArg v
     | ASplice v -> valueIsFullyMappable v
 
+and private codesIsFullyMappable (codes: BlockCodes) : bool =
+    match codes with
+    | BAnyCode -> true
+    | BCodes args -> args |> List.forall argIsFullyMappable
+
+and private scatterItemIsFullyMappable (item: BlockScatterItem) : bool =
+    match item with
+    | BRequired _
+    | BRest _ -> true
+    | BOptional(_, def) -> def |> Option.forall valueIsFullyMappable
+
 let rec private stmtIsFullyMappable (stmt: BlockStmt) : bool =
     match stmt with
-    | STryExcept _
     | SUnsupported _ -> false
     | SBreak _
     | SContinue _
@@ -732,6 +911,9 @@ let rec private stmtIsFullyMappable (stmt: BlockStmt) : bool =
     | SForRange(_, lo, hi, body) -> valueIsFullyMappable lo && valueIsFullyMappable hi && body |> List.forall stmtIsFullyMappable
     | SFork(_, delay, body) -> valueIsFullyMappable delay && body |> List.forall stmtIsFullyMappable
     | STryFinally(body, handler) -> (body |> List.forall stmtIsFullyMappable) && (handler |> List.forall stmtIsFullyMappable)
+    | STryExcept(body, arms) ->
+        (body |> List.forall stmtIsFullyMappable)
+        && (arms |> List.forall (fun a -> codesIsFullyMappable a.Codes && (a.Body |> List.forall stmtIsFullyMappable)))
 
 /// Whether every construct in `blocks` (already converted via
 /// `Blocks.astToBlocks`) has a real, registered Blockly block type -

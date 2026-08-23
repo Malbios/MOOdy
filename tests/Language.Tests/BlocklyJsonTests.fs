@@ -159,8 +159,41 @@ let ``range, first/last index, and a map literal round-trip`` () =
           ExprStmt(MapLit [ (StrLit "a", IntLit 1L); (StrLit "b", IntLit 2L) ]) ]
 
 [<Fact>]
+let ``try/except, with one arm and with multiple arms (one ANY, one explicit codes with a splice), round-trips`` () =
+    assertRoundTrips
+        [ TryExcept(
+              [ ExprStmt(Assign(id_ "x", Binary(Div, IntLit 1L, IntLit 0L))) ],
+              [ { Name = Some(bn "e"); Codes = AnyCode; Body = [ ExprStmt(Assign(id_ "x", IntLit -1L)) ] } ]
+          )
+          TryExcept(
+              [ ExprStmt(Assign(id_ "x", IntLit 1L)) ],
+              [ { Name = None
+                  Codes = Codes [ Normal(id_ "E_DIV"); Splice(id_ "more") ]
+                  Body = [ ExprStmt(Assign(id_ "x", IntLit 0L)) ] }
+                { Name = Some(bn "e2"); Codes = AnyCode; Body = [ ExprStmt(Assign(id_ "x", IntLit -1L)) ] } ]
+          ) ]
+
+[<Fact>]
+let ``catch, with the bare ANY form and with an explicit code list (including a splice), round-trips`` () =
+    assertRoundTrips
+        [ ExprStmt(Catch(Binary(Div, IntLit 1L, IntLit 0L), AnyCode, Some(IntLit 0L)))
+          ExprStmt(Catch(Binary(Div, IntLit 1L, IntLit 0L), Codes [ Normal(id_ "E_DIV"); Splice(id_ "rest") ], None)) ]
+
+[<Fact>]
+let ``scatter-assignment, mixing required/optional (with and without a default)/rest, round-trips`` () =
+    assertRoundTrips
+        [ ExprStmt(
+              Scatter([ Required(bn "a"); Optional(bn "b", Some(IntLit 1L)); Optional(bn "c", None); Rest(bn "d") ], id_ "args")
+          ) ]
+
+[<Fact>]
 let ``a construct outside this slice's coverage fails the whole chain, rather than silently misconverting`` () =
-    let stmts = [ TryExcept([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ { Name = None; Codes = AnyCode; Body = [ ExprStmt(StrLit "handled") ] } ]) ]
+    // Computed-name Prop (`obj.(expr)`, as opposed to the literal-name
+    // `obj.prop` form) is the one remaining permanently out-of-scope
+    // construct after this slice - see Blocks.fs:191-192, where it falls
+    // through to the VUnsupported escape hatch (Blocks.fs's own, not just
+    // this module's).
+    let stmts = [ ExprStmt(Prop(id_ "obj", id_ "name", 1, 1)) ]
 
     match stmts |> astToBlocks |> stmtsToJson with
     | None -> Assert.Fail("expected stmtsToJson to still produce a (one-way) moo_unsupported placeholder")
@@ -261,27 +294,29 @@ let ``isFullyMappable is true for every construct this module actually maps to a
                 ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ])
                 Fork(Some(bn "task"), IntLit 5L, [ ExprStmt(Assign(id_ "x", IntLit 1L)) ])
                 TryFinally([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ ExprStmt(Assign(id_ "y", IntLit 2L)) ])
+                TryExcept(
+                    [ ExprStmt(Assign(id_ "x", IntLit 1L)) ],
+                    [ { Name = None
+                        Codes = Codes [ Normal(id_ "E_DIV") ]
+                        Body = [ ExprStmt(Assign(id_ "x", IntLit 0L)) ] } ]
+                )
                 ExprStmt(Range(IntLit 1L, IntLit 5L))
                 ExprStmt(FirstIndex)
                 ExprStmt(LastIndex)
-                ExprStmt(MapLit [ (StrLit "a", IntLit 1L) ]) ]
+                ExprStmt(MapLit [ (StrLit "a", IntLit 1L) ])
+                ExprStmt(Catch(IntLit 1L, Codes [ Normal(id_ "E_DIV") ], Some(IntLit 0L)))
+                ExprStmt(Scatter([ Required(bn "a"); Optional(bn "b", Some(IntLit 1L)); Rest(bn "c") ], id_ "args")) ]
           ) ]
         |> astToBlocks
 
     Assert.True(isFullyMappable blocks)
 
 [<Fact>]
-let ``isFullyMappable is false for a construct Blocks.fs supports but this module's block set doesn't`` () =
-    // TryExcept has a real BlockStmt case (STryExcept) in Blocks.fs, but no
-    // real Blockly block type in Client/BlocklyEditor.fs for this slice (a
-    // variable number of except arms - deferred pending a real mutator or a
-    // fixed-max-with-kind-selector design) - Blocks.isFullyRepresentable
-    // alone would wrongly say this is fine.
-    let tryExcept =
-        TryExcept([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ { Name = None; Codes = AnyCode; Body = [ ExprStmt(StrLit "handled") ] } ])
+let ``isFullyMappable is false for the one remaining permanently out-of-scope construct (computed-name Prop/VerbCall) - Blocks.isFullyRepresentable agrees, since it's Blocks.fs's own escape hatch too`` () =
+    let computedProp = ExprStmt(Prop(id_ "obj", id_ "name", 1, 1))
 
-    Assert.True(isFullyRepresentable [ tryExcept ])
-    Assert.False(isFullyMappable (astToBlocks [ tryExcept ]))
+    Assert.False(isFullyRepresentable [ computedProp ])
+    Assert.False(isFullyMappable (astToBlocks [ computedProp ]))
 
 [<Fact>]
 let ``isFullyMappable is false when the unmappable construct is nested arbitrarily deep`` () =
@@ -289,11 +324,7 @@ let ``isFullyMappable is false when the unmappable construct is nested arbitrari
         [ While(
               None,
               id_ "cond",
-              [ If(
-                    [ (id_ "cond2",
-                       [ ExprStmt(Binary(Add, IntLit 1L, Catch(IntLit 1L, Codes [ Normal(IntLit 2L) ], None))) ]) ],
-                    None
-                ) ]
+              [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, Prop(id_ "obj", id_ "name", 1, 1))) ]) ], None) ]
           ) ]
 
     Assert.False(isFullyMappable (astToBlocks stmts))
