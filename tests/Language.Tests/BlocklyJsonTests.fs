@@ -187,3 +187,24 @@ let ``malformed json text fails cleanly rather than throwing`` () =
     Assert.True(parseJsonText "{not valid" |> Option.isNone)
     Assert.True(parseJsonText "" |> Option.isNone)
     Assert.True(parseJsonText "{\"a\": 1} trailing garbage" |> Option.isNone)
+
+[<Fact>]
+let ``call arguments are recovered by ARGi presence, not a reported count - what a real fixed-arity Blockly block actually saves`` () =
+    // No "count" field at all here, on purpose - a real Blockly-side
+    // moo_call block (fixed ARG0..ARG3 sockets, see BlocklyJson.fs's own
+    // updated doc comment) has no reason to report one; only "splices"
+    // travels via extraState, for whichever ARGi slots are actually
+    // connected.
+    let json =
+        JVObject
+            [ "type", JVString "moo_call"
+              "id", JVString "b1"
+              "fields", JVObject [ "NAME", JVString "tostr" ]
+              "inputs",
+              JVObject
+                  [ "ARG0", JVObject [ "block", JVObject [ "type", JVString "moo_int"; "fields", JVObject [ "NUM", JVNumber 1.0 ] ] ] ]
+              "extraState", JVObject [ "splices", JVArray [ JVBool false ] ] ]
+
+    match jsonToValue json with
+    | Some(VCall("tostr", [ AArg(VIntLit 1L) ])) -> ()
+    | other -> Assert.Fail(sprintf "expected a single-argument VCall, got %A" other)

@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "blockly": "^13.2.1",
     "monaco-editor": "^0.52.0"
   },
   "devDependencies": {

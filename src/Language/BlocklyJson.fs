@@ -37,10 +37,19 @@
 ///   an accepted reshaping, not a semantic change, the same "AST-
 ///   equivalent, not shape-identical" stance `Sugar.fs`/`Blocks.fs` already
 ///   take elsewhere.
-/// - `Call`/`VerbCall`/`ListLit`'s argument lists really are variable-arity
-///   with no equivalent fixed-shape trick, so they use a real `extraState`
-///   (`{count = N; splices = [bool list]}`) the way real Blockly mutators
-///   do, with `inputs.ARG0`..`ARG(N-1)` as the actual argument sockets.
+/// - `Call`/`VerbCall`/`ListLit`'s argument lists are variable-arity in the
+///   `Ast` but map to a small **fixed** number of `ARGi` sockets on the real
+///   Blockly-side blocks for this slice (see `BlocklyEditor.fs`) - a
+///   deliberate simplification, not a full dynamic mutator. The argument
+///   count is recovered by walking `ARG0`, `ARG1`, ... until the first
+///   *absent* input (left-to-right-filled, no gaps), not from a reported
+///   count - a real Blockly workspace save only round-trips whatever a
+///   fixed-arity block's own `saveExtraState` chooses to report, and there
+///   is no reason for it to report a redundant count. `splices` (whether
+///   argument `i` was `@`-prefixed) has no other field to live in, so it
+///   still travels via a small `extraState.splices` array, preserved
+///   through a real save/load cycle by a small registered Blockly
+///   extension - see `BlocklyEditor.fs`.
 module Language.BlocklyJson
 
 open Language.Ast
@@ -176,8 +185,15 @@ let rec private argsShape (args: BlockArg list) : (string * JsonValue) list * (s
 
     let inputs = args |> List.mapi (fun i a -> sprintf "ARG%d" i, valueSlot (valueToJson (argValue a)))
 
-    let extraState =
-        [ "count", JVNumber(float args.Length); "splices", JVArray(args |> List.map (isSplice >> JVBool)) ]
+    // No "count" field - the real Blockly-side blocks have a fixed number
+    // of ARGi sockets (see BlocklyEditor.fs), and the argument count is
+    // recovered from which ones are actually connected (`jsonToValue`'s
+    // `args()`, below) - a real Blockly workspace save only round-trips
+    // whatever a block's own `saveExtraState` reports, and a fixed-arity
+    // block has no reason to report a redundant count. `splices` still
+    // needs a home here (no other field could carry "was this one `@`-
+    // prefixed"), preserved via a small registered extension on the JS side.
+    let extraState = [ "splices", JVArray(args |> List.map (isSplice >> JVBool)) ]
 
     inputs, extraState
 
@@ -234,17 +250,26 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
 
     let value1 (name: string) : BlockValue option = inputBlock name |> Option.bind jsonToValue
 
+    // Walks ARG0, ARG1, ... until the first *missing* input, treating that
+    // as "end of arguments" - matching the real Blockly-side blocks' fixed,
+    // left-to-right-filled ARGi sockets (see BlocklyEditor.fs), rather than
+    // depending on a separately-reported count that a real workspace save
+    // has no reason to carry (see `argsShape`'s own comment above).
     let args () : BlockArg list option =
-        let count = field "count" extraState |> Option.bind asNumber |> Option.map int |> Option.defaultValue 0
-
         let splices =
             field "splices" extraState |> Option.map asArray |> Option.map (List.choose asBool) |> Option.defaultValue []
 
-        [ 0 .. count - 1 ]
-        |> List.map (fun i ->
-            let isSplice = splices |> List.tryItem i |> Option.defaultValue false
-            inputBlock (sprintf "ARG%d" i) |> Option.bind jsonToValue |> Option.map (fun v -> if isSplice then ASplice v else AArg v))
-        |> fun opts -> if opts |> List.forall Option.isSome then Some(opts |> List.choose id) else None
+        let rec loop (i: int) (acc: BlockArg list) : BlockArg list option =
+            match inputBlock (sprintf "ARG%d" i) with
+            | None -> Some(List.rev acc)
+            | Some blockJson ->
+                match jsonToValue blockJson with
+                | None -> None
+                | Some v ->
+                    let isSplice = splices |> List.tryItem i |> Option.defaultValue false
+                    loop (i + 1) ((if isSplice then ASplice v else AArg v) :: acc)
+
+        loop 0 []
 
     match blockType with
     | Some "moo_int" -> field "NUM" fields |> Option.bind asNumber |> Option.map (int64 >> VIntLit)
