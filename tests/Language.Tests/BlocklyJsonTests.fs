@@ -131,8 +131,36 @@ let ``a realistic multi-construct verb body round-trips`` () =
           ) ]
 
 [<Fact>]
+let ``for-in-list, both one- and two-variable forms, round-trips`` () =
+    assertRoundTrips
+        [ ForList(bn "v", None, id_ "collection", [ ExprStmt(Assign(id_ "x", id_ "v")) ])
+          ForList(bn "v", Some(bn "k"), id_ "collection", [ ExprStmt(Assign(id_ "x", id_ "k")) ]) ]
+
+[<Fact>]
+let ``for-in-range round-trips`` () =
+    assertRoundTrips [ ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ]) ]
+
+[<Fact>]
+let ``fork, named and unnamed, round-trips`` () =
+    assertRoundTrips
+        [ Fork(None, IntLit 0L, [ ExprStmt(StrLit "background work") ])
+          Fork(Some(bn "task"), IntLit 5L, [ ExprStmt(Assign(id_ "x", id_ "task")) ]) ]
+
+[<Fact>]
+let ``try/finally round-trips`` () =
+    assertRoundTrips [ TryFinally([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ ExprStmt(Assign(id_ "y", IntLit 2L)) ]) ]
+
+[<Fact>]
+let ``range, first/last index, and a map literal round-trip`` () =
+    assertRoundTrips
+        [ ExprStmt(Range(IntLit 1L, IntLit 5L))
+          ExprStmt(FirstIndex)
+          ExprStmt(LastIndex)
+          ExprStmt(MapLit [ (StrLit "a", IntLit 1L); (StrLit "b", IntLit 2L) ]) ]
+
+[<Fact>]
 let ``a construct outside this slice's coverage fails the whole chain, rather than silently misconverting`` () =
-    let stmts = [ ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ]) ]
+    let stmts = [ TryExcept([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ { Name = None; Codes = AnyCode; Body = [ ExprStmt(StrLit "handled") ] } ]) ]
 
     match stmts |> astToBlocks |> stmtsToJson with
     | None -> Assert.Fail("expected stmtsToJson to still produce a (one-way) moo_unsupported placeholder")
@@ -228,7 +256,15 @@ let ``isFullyMappable is true for every construct this module actually maps to a
               Binary(Lt, id_ "i", IntLit 10L),
               [ If([ (Binary(Eq, id_ "i", IntLit 0L), [ ExprStmt(Assign(id_ "x", IntLit 1L)) ]) ], None)
                 ExprStmt(StrLit "a comment")
-                ExprStmt(Call("tostr", [ Normal(id_ "i") ], 1, 1)) ]
+                ExprStmt(Call("tostr", [ Normal(id_ "i") ], 1, 1))
+                ForList(bn "v", None, id_ "collection", [ ExprStmt(Assign(id_ "x", id_ "v")) ])
+                ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ])
+                Fork(Some(bn "task"), IntLit 5L, [ ExprStmt(Assign(id_ "x", IntLit 1L)) ])
+                TryFinally([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ ExprStmt(Assign(id_ "y", IntLit 2L)) ])
+                ExprStmt(Range(IntLit 1L, IntLit 5L))
+                ExprStmt(FirstIndex)
+                ExprStmt(LastIndex)
+                ExprStmt(MapLit [ (StrLit "a", IntLit 1L) ]) ]
           ) ]
         |> astToBlocks
 
@@ -236,16 +272,28 @@ let ``isFullyMappable is true for every construct this module actually maps to a
 
 [<Fact>]
 let ``isFullyMappable is false for a construct Blocks.fs supports but this module's block set doesn't`` () =
-    // ForRange has a real BlockStmt case (SForRange) in Blocks.fs, but no
-    // real Blockly block type in Client/BlocklyEditor.fs for this slice -
-    // Blocks.isFullyRepresentable alone would wrongly say this is fine.
-    let forLoop = ForRange(bn "i", IntLit 1L, IntLit 3L, [ ExprStmt(Assign(id_ "x", id_ "i")) ])
-    Assert.True(isFullyRepresentable [ forLoop ])
-    Assert.False(isFullyMappable (astToBlocks [ forLoop ]))
+    // TryExcept has a real BlockStmt case (STryExcept) in Blocks.fs, but no
+    // real Blockly block type in Client/BlocklyEditor.fs for this slice (a
+    // variable number of except arms - deferred pending a real mutator or a
+    // fixed-max-with-kind-selector design) - Blocks.isFullyRepresentable
+    // alone would wrongly say this is fine.
+    let tryExcept =
+        TryExcept([ ExprStmt(Assign(id_ "x", IntLit 1L)) ], [ { Name = None; Codes = AnyCode; Body = [ ExprStmt(StrLit "handled") ] } ])
+
+    Assert.True(isFullyRepresentable [ tryExcept ])
+    Assert.False(isFullyMappable (astToBlocks [ tryExcept ]))
 
 [<Fact>]
 let ``isFullyMappable is false when the unmappable construct is nested arbitrarily deep`` () =
     let stmts =
-        [ While(None, id_ "cond", [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, Range(IntLit 1L, IntLit 2L))) ]) ], None) ]) ]
+        [ While(
+              None,
+              id_ "cond",
+              [ If(
+                    [ (id_ "cond2",
+                       [ ExprStmt(Binary(Add, IntLit 1L, Catch(IntLit 1L, Codes [ Normal(IntLit 2L) ], None))) ]) ],
+                    None
+                ) ]
+          ) ]
 
     Assert.False(isFullyMappable (astToBlocks stmts))

@@ -9,17 +9,22 @@
 /// - this module never touches `obj`/dynamic JS at all.
 ///
 /// Covers a deliberately smaller construct set than `Blocks.fs`'s full
-/// width (see that module's own doc comment for the full list) - just
-/// enough to prove the real Blockly pipeline end-to-end: every literal
-/// kind, `Ident`, `Binary`/`Unary` (one Blockly block type per family with
-/// an `OP` field, not one block type per operator), `Cond`, `Assign`,
-/// `Prop`/`VerbCall`/`Call`, `ListLit`, `Index`, `If`, `While`,
-/// `Return`/`Break`/`Continue`, `ExprStmt`, `SComment`. Anything else maps
-/// one-way to a `moo_unsupported`/`moo_unsupported_expr` placeholder
-/// carrying a debug string - not meant to ever actually reach a real
-/// workspace in practice, since the eventual UI gates the toggle on
-/// `Blocks.isFullyRepresentable` first; it exists only so this module's
-/// functions stay total.
+/// width (see that module's own doc comment for the full list) - every
+/// literal kind, `Ident`, `Binary`/`Unary` (one Blockly block type per
+/// family with an `OP` field, not one block type per operator), `Cond`,
+/// `Assign`, `Prop`/`VerbCall`/`Call`, `ListLit`, `Index`, `Range`,
+/// `FirstIndex`/`LastIndex`, `MapLit`, `If`, `While`, `ForList`, `ForRange`,
+/// `Fork`, `TryFinally`, `Return`/`Break`/`Continue`, `ExprStmt`,
+/// `SComment`. Still out of scope (a genuine variable-arity shape needing
+/// either a real Blockly mutator or a fixed-max-with-kind-selector design,
+/// not attempted yet): `TryExcept` (a variable number of `except` arms),
+/// `Scatter` (a variable number of independently required/optional/rest
+/// items), `Catch`'s explicit code list, and computed-name `Prop`/
+/// `VerbCall`. Anything out of scope maps one-way to a
+/// `moo_unsupported`/`moo_unsupported_expr` placeholder carrying a debug
+/// string - not meant to ever actually reach a real workspace in practice,
+/// since the eventual UI gates the toggle on `isFullyMappable` first; it
+/// exists only so this module's functions stay total.
 ///
 /// Blockly's real serialized shape has no first-class way to represent a
 /// variable number of child value-inputs (an `if`/`elseif` chain, a call's
@@ -227,10 +232,14 @@ and valueToJson (value: BlockValue) : JsonValue =
         let inputs, extraState = argsShape args
         obj "moo_list" [] inputs extraState
     | VIndex(e, i) -> obj "moo_index" [] (v1 "VALUE" e @ v1 "INDEX" i) []
-    | VMapLit _
-    | VRange _
-    | VFirstIndex
-    | VLastIndex
+    | VRange(lo, hi) -> obj "moo_range" [] (v1 "LO" lo @ v1 "HI" hi) []
+    | VFirstIndex -> obj "moo_firstindex" [] [] []
+    | VLastIndex -> obj "moo_lastindex" [] [] []
+    | VMapLit pairs ->
+        let inputs =
+            pairs |> List.mapi (fun i (k, v) -> v1 (sprintf "KEY%d" i) k @ v1 (sprintf "VAL%d" i) v) |> List.concat
+
+        obj "moo_map" [] inputs []
     | VScatter _
     | VCatch _
     | VUnsupported _ -> obj "moo_unsupported_expr" [ "DEBUG", JVString(sprintf "%A" value) ] [] []
@@ -268,6 +277,22 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
                 | Some v ->
                     let isSplice = splices |> List.tryItem i |> Option.defaultValue false
                     loop (i + 1) ((if isSplice then ASplice v else AArg v) :: acc)
+
+        loop 0 []
+
+    // Walks KEY0/VAL0, KEY1/VAL1, ... until the first missing pair - same
+    // "fixed, left-to-right-filled sockets" convention as `args()` above.
+    let mapPairs () : (BlockValue * BlockValue) list option =
+        let rec loop (i: int) (acc: (BlockValue * BlockValue) list) : (BlockValue * BlockValue) list option =
+            match inputBlock (sprintf "KEY%d" i) with
+            | None -> Some(List.rev acc)
+            | Some keyJson ->
+                match inputBlock (sprintf "VAL%d" i), jsonToValue keyJson with
+                | Some valJson, Some k ->
+                    match jsonToValue valJson with
+                    | Some v -> loop (i + 1) ((k, v) :: acc)
+                    | None -> None
+                | _ -> None
 
         loop 0 []
 
@@ -312,6 +337,13 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
         match value1 "VALUE", value1 "INDEX" with
         | Some e, Some i -> Some(VIndex(e, i))
         | _ -> None
+    | Some "moo_range" ->
+        match value1 "LO", value1 "HI" with
+        | Some lo, Some hi -> Some(VRange(lo, hi))
+        | _ -> None
+    | Some "moo_firstindex" -> Some VFirstIndex
+    | Some "moo_lastindex" -> Some VLastIndex
+    | Some "moo_map" -> mapPairs () |> Option.map VMapLit
     | _ -> None
 
 /// `BlockStmt` -> Blockly's real per-block JSON shape, total, WITHOUT its
@@ -335,11 +367,18 @@ let rec private stmtToJsonFields (stmt: BlockStmt) : (string * JsonValue) list =
     | SContinue name -> makeBlock "moo_continue" [ "LABEL", JVString(name |> Option.defaultValue "") ] [] []
     | SExpr v -> makeBlock "moo_expr" [] (v1 "VALUE" v) []
     | SComment s -> makeBlock "moo_comment" [ "TEXT", JVString s ] [] []
-    | SForList _
-    | SForRange _
-    | SFork _
+    | SForList(var, indexVar, source, body) ->
+        makeBlock
+            "moo_forlist"
+            [ "VAR", JVString var; "INDEXVAR", JVString(indexVar |> Option.defaultValue "") ]
+            (v1 "SOURCE" source @ stmtSlot "BODY" body)
+            []
+    | SForRange(var, lo, hi, body) ->
+        makeBlock "moo_forrange" [ "VAR", JVString var ] (v1 "LO" lo @ v1 "HI" hi @ stmtSlot "BODY" body) []
+    | SFork(name, delay, body) ->
+        makeBlock "moo_fork" [ "NAME", JVString(name |> Option.defaultValue "") ] (v1 "DELAY" delay @ stmtSlot "BODY" body) []
+    | STryFinally(body, handler) -> makeBlock "moo_try_finally" [] (stmtSlot "BODY" body @ stmtSlot "HANDLER" handler) []
     | STryExcept _
-    | STryFinally _
     | SUnsupported _ -> makeBlock "moo_unsupported" [ "DEBUG", JVString(sprintf "%A" stmt) ] [] []
 
 /// A statement sequence (a verb body, or any block's nested body) ->
@@ -363,6 +402,8 @@ let rec jsonToStmts (json: JsonValue) : BlockStmt list option =
     let inputBlock (name: string) : JsonValue option = field name inputs |> Option.map asFields |> Option.bind (field "block")
     let value1 (name: string) : BlockValue option = inputBlock name |> Option.bind jsonToValue
     let body (name: string) : BlockStmt list option = inputBlock name |> Option.map jsonToStmts |> Option.defaultValue (Some [])
+    let strField (name: string) : string option = field "fields" fields |> Option.map asFields |> Option.bind (field name) |> Option.bind asString
+    let optStrField (name: string) : string option = match strField name with Some "" -> None | other -> other
 
     let this: BlockStmt option =
         match blockType with
@@ -374,20 +415,30 @@ let rec jsonToStmts (json: JsonValue) : BlockStmt list option =
                 | None -> None
             | _ -> None
         | Some "moo_while" ->
-            let label = field "fields" fields |> Option.map asFields |> Option.bind (field "LABEL") |> Option.bind asString
             match value1 "COND", body "BODY" with
-            | Some cond, Some b -> Some(SWhile((if label = Some "" then None else label), cond, b))
+            | Some cond, Some b -> Some(SWhile(optStrField "LABEL", cond, b))
             | _ -> None
         | Some "moo_return" -> Some(SReturn(value1 "VALUE"))
-        | Some "moo_break" ->
-            let label = field "fields" fields |> Option.map asFields |> Option.bind (field "LABEL") |> Option.bind asString
-            Some(SBreak(if label = Some "" then None else label))
-        | Some "moo_continue" ->
-            let label = field "fields" fields |> Option.map asFields |> Option.bind (field "LABEL") |> Option.bind asString
-            Some(SContinue(if label = Some "" then None else label))
+        | Some "moo_break" -> Some(SBreak(optStrField "LABEL"))
+        | Some "moo_continue" -> Some(SContinue(optStrField "LABEL"))
         | Some "moo_expr" -> value1 "VALUE" |> Option.map SExpr
-        | Some "moo_comment" ->
-            field "fields" fields |> Option.map asFields |> Option.bind (field "TEXT") |> Option.bind asString |> Option.map SComment
+        | Some "moo_comment" -> strField "TEXT" |> Option.map SComment
+        | Some "moo_forlist" ->
+            match strField "VAR", value1 "SOURCE", body "BODY" with
+            | Some var, Some source, Some b -> Some(SForList(var, optStrField "INDEXVAR", source, b))
+            | _ -> None
+        | Some "moo_forrange" ->
+            match strField "VAR", value1 "LO", value1 "HI", body "BODY" with
+            | Some var, Some lo, Some hi, Some b -> Some(SForRange(var, lo, hi, b))
+            | _ -> None
+        | Some "moo_fork" ->
+            match value1 "DELAY", body "BODY" with
+            | Some delay, Some b -> Some(SFork(optStrField "NAME", delay, b))
+            | _ -> None
+        | Some "moo_try_finally" ->
+            match body "BODY", body "HANDLER" with
+            | Some b, Some h -> Some(STryFinally(b, h))
+            | _ -> None
         | _ -> None
 
     match this with
@@ -635,10 +686,6 @@ let parseJsonText (text: string) : JsonValue option =
 /// alone, before ever calling `stmtsToJson`/`loadStateText`.
 let rec private valueIsFullyMappable (value: BlockValue) : bool =
     match value with
-    | VMapLit _
-    | VRange _
-    | VFirstIndex
-    | VLastIndex
     | VScatter _
     | VCatch _
     | VUnsupported _ -> false
@@ -648,7 +695,9 @@ let rec private valueIsFullyMappable (value: BlockValue) : bool =
     | VObjLit _
     | VErrLit _
     | VBoolLit _
-    | VIdent _ -> true
+    | VIdent _
+    | VFirstIndex
+    | VLastIndex -> true
     | VBinary(_, l, r) -> valueIsFullyMappable l && valueIsFullyMappable r
     | VUnary(_, e) -> valueIsFullyMappable e
     | VCond(c, t, f) -> valueIsFullyMappable c && valueIsFullyMappable t && valueIsFullyMappable f
@@ -658,6 +707,8 @@ let rec private valueIsFullyMappable (value: BlockValue) : bool =
     | VCall(_, args) -> args |> List.forall argIsFullyMappable
     | VListLit args -> args |> List.forall argIsFullyMappable
     | VIndex(e, i) -> valueIsFullyMappable e && valueIsFullyMappable i
+    | VRange(lo, hi) -> valueIsFullyMappable lo && valueIsFullyMappable hi
+    | VMapLit pairs -> pairs |> List.forall (fun (k, v) -> valueIsFullyMappable k && valueIsFullyMappable v)
 
 and private argIsFullyMappable (arg: BlockArg) : bool =
     match arg with
@@ -666,11 +717,7 @@ and private argIsFullyMappable (arg: BlockArg) : bool =
 
 let rec private stmtIsFullyMappable (stmt: BlockStmt) : bool =
     match stmt with
-    | SForList _
-    | SForRange _
-    | SFork _
     | STryExcept _
-    | STryFinally _
     | SUnsupported _ -> false
     | SBreak _
     | SContinue _
@@ -681,6 +728,10 @@ let rec private stmtIsFullyMappable (stmt: BlockStmt) : bool =
     | SWhile(_, cond, body) -> valueIsFullyMappable cond && body |> List.forall stmtIsFullyMappable
     | SReturn v -> v |> Option.forall valueIsFullyMappable
     | SExpr v -> valueIsFullyMappable v
+    | SForList(_, _, source, body) -> valueIsFullyMappable source && body |> List.forall stmtIsFullyMappable
+    | SForRange(_, lo, hi, body) -> valueIsFullyMappable lo && valueIsFullyMappable hi && body |> List.forall stmtIsFullyMappable
+    | SFork(_, delay, body) -> valueIsFullyMappable delay && body |> List.forall stmtIsFullyMappable
+    | STryFinally(body, handler) -> (body |> List.forall stmtIsFullyMappable) && (handler |> List.forall stmtIsFullyMappable)
 
 /// Whether every construct in `blocks` (already converted via
 /// `Blocks.astToBlocks`) has a real, registered Blockly block type -

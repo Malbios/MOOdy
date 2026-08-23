@@ -39,8 +39,9 @@ let private blockly: obj = importAll "blockly"
 /// same reason. Field/input names match `BlocklyJson.fs`'s own
 /// `fields`/`inputs` keys exactly (`NUM`/`TEXT`/`CODE`/`NAME`/`OP`/`LABEL`,
 /// `LEFT`/`RIGHT`/`VALUE`/`COND`/`THEN`/`ELSE`/`TARGET`/`RECEIVER`/`INDEX`/
-/// `BODY`/`ARG0..ARG3`) - this module and that one must never drift apart
-/// on those spellings.
+/// `BODY`/`ARG0..ARG3`/`VAR`/`INDEXVAR`/`SOURCE`/`LO`/`HI`/`DELAY`/
+/// `HANDLER`/`KEY0..KEY3`/`VAL0..VAL3`) - this module and that one must
+/// never drift apart on those spellings.
 /// `moo_call`/`moo_verbcall`/`moo_list` each get exactly 4 fixed `ARGi`
 /// argument sockets (`ARG0`..`ARG3`) - this constant documents that number
 /// everywhere it matters (`BlocklyJson.fs` doesn't hardcode it at all,
@@ -152,7 +153,36 @@ let private blockDefinitions: obj =
         {"type": "moo_expr", "message0": "%1 ;", "args0": [{"type": "input_value", "name": "VALUE"}],
         "previousStatement": null, "nextStatement": null, "style": "variable_blocks"},
         {"type": "moo_comment", "message0": "# %1", "args0": [{"type": "field_input", "name": "TEXT", "text": ""}],
-        "previousStatement": null, "nextStatement": null, "style": "text_blocks"}
+        "previousStatement": null, "nextStatement": null, "style": "text_blocks"},
+        {"type": "moo_forlist", "message0": "for %1 [%2] in ( %3 )", "args0": [
+            {"type": "field_input", "name": "VAR", "text": "x"},
+            {"type": "field_input", "name": "INDEXVAR", "text": ""},
+            {"type": "input_value", "name": "SOURCE"}
+        ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
+        {"type": "moo_forrange", "message0": "for %1 in [ %2 .. %3 ]", "args0": [
+            {"type": "field_input", "name": "VAR", "text": "x"},
+            {"type": "input_value", "name": "LO"}, {"type": "input_value", "name": "HI"}
+        ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
+        {"type": "moo_fork", "message0": "fork [%1] after %2", "args0": [
+            {"type": "field_input", "name": "NAME", "text": ""}, {"type": "input_value", "name": "DELAY"}
+        ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
+        {"type": "moo_try_finally", "message0": "try %1", "args0": [{"type": "input_statement", "name": "BODY"}],
+        "message1": "finally %1", "args1": [{"type": "input_statement", "name": "HANDLER"}],
+        "previousStatement": null, "nextStatement": null, "style": "logic_blocks"},
+        {"type": "moo_range", "message0": "%1 .. %2", "args0": [
+            {"type": "input_value", "name": "LO"}, {"type": "input_value", "name": "HI"}
+        ], "inputsInline": true, "output": null, "style": "list_blocks"},
+        {"type": "moo_firstindex", "message0": "$ (first)", "args0": [], "output": null, "style": "list_blocks"},
+        {"type": "moo_lastindex", "message0": "^ (last)", "args0": [], "output": null, "style": "list_blocks"},
+        {"type": "moo_map", "message0": "[ %1 -> %2 , %3 -> %4 , %5 -> %6 , %7 -> %8 ]", "args0": [
+            {"type": "input_value", "name": "KEY0"}, {"type": "input_value", "name": "VAL0"},
+            {"type": "input_value", "name": "KEY1"}, {"type": "input_value", "name": "VAL1"},
+            {"type": "input_value", "name": "KEY2"}, {"type": "input_value", "name": "VAL2"},
+            {"type": "input_value", "name": "KEY3"}, {"type": "input_value", "name": "VAL3"}
+        ], "inputsInline": true, "output": null, "style": "list_blocks"}
     ]"""
 
 /// Registers this slice's block set and extension with Blockly - call once,
@@ -178,11 +208,15 @@ let private toolbox: obj =
                 {"kind": "block", "type": "moo_bool"},
                 {"kind": "block", "type": "moo_cond"},
                 {"kind": "block", "type": "moo_if"},
+                {"kind": "block", "type": "moo_try_finally"},
                 {"kind": "block", "type": "moo_binary", "fields": {"OP": "EQ"}},
                 {"kind": "block", "type": "moo_unary", "fields": {"OP": "NOT"}}
             ]},
             {"kind": "category", "name": "Loops", "colour": "120", "contents": [
                 {"kind": "block", "type": "moo_while"},
+                {"kind": "block", "type": "moo_forlist"},
+                {"kind": "block", "type": "moo_forrange"},
+                {"kind": "block", "type": "moo_fork"},
                 {"kind": "block", "type": "moo_break"},
                 {"kind": "block", "type": "moo_continue"},
                 {"kind": "block", "type": "moo_return"}
@@ -199,7 +233,11 @@ let private toolbox: obj =
             ]},
             {"kind": "category", "name": "Lists", "colour": "260", "contents": [
                 {"kind": "block", "type": "moo_list"},
-                {"kind": "block", "type": "moo_index"}
+                {"kind": "block", "type": "moo_index"},
+                {"kind": "block", "type": "moo_range"},
+                {"kind": "block", "type": "moo_firstindex"},
+                {"kind": "block", "type": "moo_lastindex"},
+                {"kind": "block", "type": "moo_map"}
             ]},
             {"kind": "category", "name": "Objects", "colour": "20", "contents": [
                 {"kind": "block", "type": "moo_obj"},
