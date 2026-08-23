@@ -15,13 +15,21 @@ open Language.BlocklyJson
 let private id_ name = Ident(name, 1, 1)
 let private bn name : BoundName = { Name = name; Line = 1; Col = 1 }
 
+/// Goes all the way through JSON *text*, not just the `JsonValue` tree -
+/// the same boundary `Client/BlocklyEditor.fs` actually crosses via
+/// `JS.JSON.stringify`/`JS.JSON.parse`.
 let private assertRoundTrips (stmts: Stmt list) =
     match stmts |> astToBlocks |> stmtsToJson with
     | None -> Assert.Fail("stmtsToJson returned None for a non-empty statement list")
     | Some json ->
-        match jsonToStmts json with
-        | None -> Assert.Fail("jsonToStmts failed to reconstruct a block list this slice should cover")
-        | Some blocks -> Assert.Equal<Stmt list>(stmts, blocksToAst blocks)
+        let text = toJsonText json
+
+        match parseJsonText text with
+        | None -> Assert.Fail(sprintf "parseJsonText failed to re-parse stmtsToJson's own output: %s" text)
+        | Some reparsedJson ->
+            match jsonToStmts reparsedJson with
+            | None -> Assert.Fail("jsonToStmts failed to reconstruct a block list this slice should cover")
+            | Some blocks -> Assert.Equal<Stmt list>(stmts, blocksToAst blocks)
 
 [<Fact>]
 let ``every literal kind round-trips through the full json pipeline`` () =
@@ -132,3 +140,50 @@ let ``a construct outside this slice's coverage fails the whole chain, rather th
         match jsonToStmts json with
         | None -> ()
         | Some blocks -> Assert.Fail(sprintf "expected None, got %A" blocks)
+
+// ---------------------------------------------------------------------------
+// JsonValue <-> JSON text - the boundary `Client/BlocklyEditor.fs` actually
+// crosses via `JS.JSON.stringify`/`JS.JSON.parse`.
+// ---------------------------------------------------------------------------
+
+let private assertJsonTextRoundTrips (v: JsonValue) =
+    let text = toJsonText v
+
+    match parseJsonText text with
+    | None -> Assert.Fail(sprintf "parseJsonText failed on: %s" text)
+    | Some v2 -> Assert.Equal<JsonValue>(v, v2)
+
+[<Fact>]
+let ``every JsonValue case round-trips through text`` () =
+    assertJsonTextRoundTrips (JVString "hello")
+    assertJsonTextRoundTrips (JVNumber 42.0)
+    assertJsonTextRoundTrips (JVNumber -3.5)
+    assertJsonTextRoundTrips (JVBool true)
+    assertJsonTextRoundTrips (JVBool false)
+    assertJsonTextRoundTrips JVNull
+    assertJsonTextRoundTrips (JVArray [ JVNumber 1.0; JVNumber 2.0; JVNull ])
+    assertJsonTextRoundTrips (JVObject [ "a", JVNumber 1.0; "b", JVArray [ JVString "x"; JVBool true ] ])
+
+[<Fact>]
+let ``strings needing escaping (quotes, backslashes, control chars, unicode) round-trip through text`` () =
+    assertJsonTextRoundTrips (JVString "a \"quoted\" \\backslash\\ line\nbreak\ttab")
+    assertJsonTextRoundTrips (JVString "unicode: éü中")
+    assertJsonTextRoundTrips (JVString "")
+
+[<Fact>]
+let ``a deeply nested object/array structure round-trips through text`` () =
+    assertJsonTextRoundTrips (
+        JVObject
+            [ "type", JVString "moo_if"
+              "id", JVString "b1"
+              "inputs",
+              JVObject
+                  [ "COND", JVObject [ "block", JVObject [ "type", JVString "moo_ident"; "fields", JVObject [ "NAME", JVString "x" ] ] ] ]
+              "extraState", JVObject [ "count", JVNumber 2.0; "splices", JVArray [ JVBool false; JVBool true ] ] ]
+    )
+
+[<Fact>]
+let ``malformed json text fails cleanly rather than throwing`` () =
+    Assert.True(parseJsonText "{not valid" |> Option.isNone)
+    Assert.True(parseJsonText "" |> Option.isNone)
+    Assert.True(parseJsonText "{\"a\": 1} trailing garbage" |> Option.isNone)

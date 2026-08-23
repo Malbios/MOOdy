@@ -371,3 +371,225 @@ let rec jsonToStmts (json: JsonValue) : BlockStmt list option =
         match field "next" fields |> Option.map asFields |> Option.bind (field "block") with
         | None -> Some [ s ]
         | Some nextJson -> jsonToStmts nextJson |> Option.map (fun rest -> s :: rest)
+
+// ---------------------------------------------------------------------------
+// JsonValue <-> JSON text. Needed so `Client/BlocklyEditor.fs`'s entire
+// obj<->JsonValue boundary can just be `JS.JSON.stringify`/`JS.JSON.parse`
+// against a plain string, rather than a hand-written recursive walk of a
+// real JS object's runtime type (`Array.isArray`/`typeof` introspection) -
+// keeping that unavoidably environment-specific glue as small as possible,
+// and keeping the one non-trivial piece (actually parsing/serializing JSON)
+// in this pure, `dotnet test`-able module instead.
+// ---------------------------------------------------------------------------
+
+let private escapeJsonChar (c: char) : string =
+    match c with
+    | '"' -> "\\\""
+    | '\\' -> "\\\\"
+    | '\n' -> "\\n"
+    | '\r' -> "\\r"
+    | '\t' -> "\\t"
+    | c when int c < 0x20 -> sprintf "\\u%04x" (int c)
+    | c -> string c
+
+let private escapeJsonString (s: string) : string =
+    "\"" + (s |> Seq.map escapeJsonChar |> String.concat "") + "\""
+
+/// Whole numbers print without a trailing `.0` (`42`, not `42.0`) - JSON
+/// (and JS) makes no int/float distinction, so either is equally valid on
+/// the wire; the plain form is just more natural for the common integer
+/// case (most `NUM` fields).
+let private numberText (n: float) : string =
+    if System.Double.IsNaN n || System.Double.IsInfinity n then
+        "0"
+    elif n = System.Math.Floor n && abs n < 1e15 then
+        string (int64 n)
+    else
+        n.ToString(System.Globalization.CultureInfo.InvariantCulture)
+
+let rec toJsonText (v: JsonValue) : string =
+    match v with
+    | JVString s -> escapeJsonString s
+    | JVNumber n -> numberText n
+    | JVBool b -> if b then "true" else "false"
+    | JVNull -> "null"
+    | JVArray xs -> "[" + (xs |> List.map toJsonText |> String.concat ",") + "]"
+    | JVObject fs -> "{" + (fs |> List.map (fun (k, v) -> escapeJsonString k + ":" + toJsonText v) |> String.concat ",") + "}"
+
+/// A small recursive-descent JSON parser - `None` on any malformed input
+/// (including trailing garbage after a well-formed value) rather than
+/// throwing, since a caller (a Blockly workspace save, in practice) should
+/// treat "couldn't parse this" as just another "not representable" case.
+let parseJsonText (text: string) : JsonValue option =
+    let len = text.Length
+    let mutable pos = 0
+    let peek () = if pos < len then Some text.[pos] else None
+    let advance () =
+        let c = text.[pos]
+        pos <- pos + 1
+        c
+
+    let skipWs () =
+        while pos < len && (text.[pos] = ' ' || text.[pos] = '\t' || text.[pos] = '\n' || text.[pos] = '\r') do
+            pos <- pos + 1
+
+    let expect (c: char) : bool =
+        if peek () = Some c then
+            advance () |> ignore
+            true
+        else
+            false
+
+    let startsWith (word: string) : bool = pos + word.Length <= len && text.Substring(pos, word.Length) = word
+
+    let rec parseValue () : JsonValue option =
+        skipWs ()
+        match peek () with
+        | Some '{' -> parseObject ()
+        | Some '[' -> parseArray ()
+        | Some '"' -> parseString () |> Option.map JVString
+        | Some 't' when startsWith "true" -> pos <- pos + 4; Some(JVBool true)
+        | Some 'f' when startsWith "false" -> pos <- pos + 5; Some(JVBool false)
+        | Some 'n' when startsWith "null" -> pos <- pos + 4; Some JVNull
+        | Some c when c = '-' || System.Char.IsDigit c -> parseNumber ()
+        | _ -> None
+
+    and parseObject () : JsonValue option =
+        advance () |> ignore // '{'
+        skipWs ()
+
+        if expect '}' then
+            Some(JVObject [])
+        else
+            let fields = ResizeArray()
+
+            let rec loop () =
+                skipWs ()
+
+                match parseString () with
+                | None -> None
+                | Some key ->
+                    skipWs ()
+
+                    if not (expect ':') then
+                        None
+                    else
+                        match parseValue () with
+                        | None -> None
+                        | Some v ->
+                            fields.Add(key, v)
+                            skipWs ()
+
+                            if expect ',' then loop ()
+                            elif expect '}' then Some(JVObject(List.ofSeq fields))
+                            else None
+
+            loop ()
+
+    and parseArray () : JsonValue option =
+        advance () |> ignore // '['
+        skipWs ()
+
+        if expect ']' then
+            Some(JVArray [])
+        else
+            let items = ResizeArray()
+
+            let rec loop () =
+                match parseValue () with
+                | None -> None
+                | Some v ->
+                    items.Add v
+                    skipWs ()
+
+                    if expect ',' then loop ()
+                    elif expect ']' then Some(JVArray(List.ofSeq items))
+                    else None
+
+            loop ()
+
+    and parseString () : string option =
+        skipWs ()
+
+        if peek () <> Some '"' then
+            None
+        else
+            advance () |> ignore
+            let sb = System.Text.StringBuilder()
+
+            let rec loop () =
+                match peek () with
+                | None -> None
+                | Some '"' ->
+                    advance () |> ignore
+                    Some(sb.ToString())
+                | Some '\\' ->
+                    advance () |> ignore
+
+                    match peek () with
+                    | Some 'n' -> advance () |> ignore; sb.Append('\n') |> ignore; loop ()
+                    | Some 'r' -> advance () |> ignore; sb.Append('\r') |> ignore; loop ()
+                    | Some 't' -> advance () |> ignore; sb.Append('\t') |> ignore; loop ()
+                    | Some 'b' -> advance () |> ignore; sb.Append('\b') |> ignore; loop ()
+                    | Some 'f' -> advance () |> ignore; sb.Append('\f') |> ignore; loop ()
+                    | Some '"' -> advance () |> ignore; sb.Append('"') |> ignore; loop ()
+                    | Some '\\' -> advance () |> ignore; sb.Append('\\') |> ignore; loop ()
+                    | Some '/' -> advance () |> ignore; sb.Append('/') |> ignore; loop ()
+                    | Some 'u' when pos + 5 <= len ->
+                        advance () |> ignore
+                        let hex = text.Substring(pos, 4)
+                        pos <- pos + 4
+
+                        match System.Int32.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture) with
+                        | true, code ->
+                            sb.Append(char code) |> ignore
+                            loop ()
+                        | false, _ -> None
+                    | _ -> None
+                | Some c ->
+                    advance () |> ignore
+                    sb.Append(c) |> ignore
+                    loop ()
+
+            loop ()
+
+    and parseNumber () : JsonValue option =
+        let start = pos
+        if peek () = Some '-' then advance () |> ignore
+
+        while pos < len && System.Char.IsDigit text.[pos] do
+            pos <- pos + 1
+
+        if peek () = Some '.' then
+            advance () |> ignore
+
+            while pos < len && System.Char.IsDigit text.[pos] do
+                pos <- pos + 1
+
+        match peek () with
+        | Some 'e'
+        | Some 'E' ->
+            advance () |> ignore
+
+            match peek () with
+            | Some '+'
+            | Some '-' -> advance () |> ignore
+            | _ -> ()
+
+            while pos < len && System.Char.IsDigit text.[pos] do
+                pos <- pos + 1
+        | _ -> ()
+
+        let numText = text.Substring(start, pos - start)
+
+        match
+            System.Double.TryParse(numText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture)
+        with
+        | true, n -> Some(JVNumber n)
+        | false, _ -> None
+
+    match parseValue () with
+    | None -> None
+    | Some v ->
+        skipWs ()
+        if pos = len then Some v else None
