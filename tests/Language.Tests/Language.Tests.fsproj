@@ -12,6 +12,7 @@
     <Compile Include="ParserCorpusTests.fs" />
     <Compile Include="PrinterTests.fs" />
     <Compile Include="BlocksTests.fs" />
+    <Compile Include="BlocklyJsonTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

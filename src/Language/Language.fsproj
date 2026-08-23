@@ -11,6 +11,7 @@
     <Compile Include="Printer.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Blocks.fs" />
+    <Compile Include="BlocklyJson.fs" />
   </ItemGroup>
 
 </Project>
