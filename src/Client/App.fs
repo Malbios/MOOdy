@@ -493,6 +493,18 @@ let private editor = Monaco.create editorMonacoEl
 module private BlocklyToggle =
     let mutable private workspace: obj option = None
 
+    /// Fetches the live builtins list and feeds `BlocklyEditor.
+    /// setKnownBuiltins` (backing `moo_call`'s NAME-field validator) -
+    /// starts as a no-op since `moocodeDocsCache`/`LspClient` aren't
+    /// defined yet at this point in the file; reassigned to the real
+    /// implementation once they are (`ensureBlocklyBuiltinsLoadedAsync`,
+    /// further down), via `setBuiltinsLoader` below. Always reassigned
+    /// before the app finishes its own top-level startup sequence - long
+    /// before any click could reach this - so the no-op default is really
+    /// just keeping this binding total, not a real runtime fallback path.
+    let mutable private ensureBuiltinsLoaded: unit -> Async<unit> = fun () -> async { return () }
+    let setBuiltinsLoader (f: unit -> Async<unit>) : unit = ensureBuiltinsLoaded <- f
+
     let private getWorkspace () : obj =
         match workspace with
         | Some ws -> ws
@@ -567,6 +579,8 @@ module private BlocklyToggle =
 
     editorBlocklyToggleBtn.onclick <-
         fun _ ->
+            ensureBuiltinsLoaded () |> Async.StartImmediate
+
             match textToBlocklyState (editor.getValue ()) with
             | Error msg -> window.alert msg
             | Ok stateText ->
@@ -917,6 +931,36 @@ let private errorCodeGlossary: (string * string * string * string)[] =
        "Exec error - the `exec()` builtin's external command failed to start or exited abnormally.",
        "error"
        "E_INTRPT", "E_INTRPT", "Interrupted - the running task was explicitly killed (`kill_task()`) or interrupted before it finished.", "error" |]
+
+/// Ensures `moocodeDocsCache` is populated (mirroring - not calling into,
+/// since it's inlined inside a much larger match arm - `switchToSidebarView`'s
+/// own `DocsView` fetch-and-merge logic; whichever of the two triggers this
+/// first "wins," the other then finds `Some` already cached and skips a
+/// redundant fetch, matching the cache's own "fetched at most once per
+/// session" doc comment) and feeds the live builtin names into
+/// `BlocklyEditor.setKnownBuiltins` - wired up as `BlocklyToggle`'s own
+/// `ensureBuiltinsLoaded` further down (that module is defined earlier in
+/// this file than `moocodeDocsCache`/`LspClient`, so it can't call this
+/// directly - see its own comment).
+let private ensureBlocklyBuiltinsLoadedAsync () : Async<unit> =
+    async {
+        let! docs =
+            match moocodeDocsCache with
+            | Some cached -> async { return cached }
+            | None ->
+                async {
+                    let! results = LspClient.getMoocodeDocsAsync ()
+                    let merged = Array.append results errorCodeGlossary
+                    moocodeDocsCache <- Some merged
+                    return merged
+                }
+
+        docs
+        |> Array.choose (fun (name, _, _, kind) -> if kind = "builtin" then Some name else None)
+        |> BlocklyEditor.setKnownBuiltins
+    }
+
+BlocklyToggle.setBuiltinsLoader ensureBlocklyBuiltinsLoadedAsync
 
 /// Which property, if any, is the specific sub-focus within the currently
 /// shown inspector - set alongside `selectedObjRef` whenever a caller asks

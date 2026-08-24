@@ -104,6 +104,86 @@ let private extraStateExtensionFn: obj =
         };
     })"""
 
+/// A non-blocking `onchange`-driven warning, not a hard connection-type
+/// refusal - confirmed live (this project's own research) that
+/// `Blockly.serialization.workspaces.load` throws on a mismatched-type
+/// connection during deserialization, so retrofitting `"output"`/`"check"`
+/// typing onto `moo_obj`/`moo_err` to make Blockly outright refuse the
+/// connection would risk breaking the load of any pre-existing saved verb
+/// that already has this pattern. A `setWarningText` icon achieves the
+/// same "surface the gotcha" goal without that risk: MOOcode's own real,
+/// documented footgun is that an OBJ/ERR value tests false in a boolean
+/// context even when it's a valid object/error - `#123 ? "y" | "n"` always
+/// picks "n" - a mistake raw text and the LSP don't currently catch either.
+/// `onchange`/`getInputTargetBlock`/`setWarningText` are real, confirmed
+/// `Block` APIs (`core/block.d.ts`); this extension only sets `onchange`
+/// (no `saveExtraState`/`loadExtraState`/`compose`/`decompose`), so per
+/// this file's own doc comment on `"extensions"` vs `"mutator"` above, it's
+/// safe as a plain `"extensions"` entry - confirmed the sanity check
+/// Blockly runs on non-mutator extensions only inspects those four
+/// mutation-related properties, never `onchange`.
+let private booleanContextWarningExtensionFn: obj =
+    emitJsExpr
+        ()
+        """(function() {
+        this.setOnChange(function() {
+            var cond = this.getInputTargetBlock('COND');
+            var isAlwaysFalse = cond && (cond.type === 'moo_obj' || cond.type === 'moo_err');
+            this.setWarningText(isAlwaysFalse
+                ? 'An object or error value is always false in a boolean context in MOOcode, even a valid object reference - this condition will never be true.'
+                : null);
+        });
+    })"""
+
+/// A plain mutable JS object (not an F# value - `emitJsExpr`'s `$0`
+/// splices in *values*, so this is the shared handle both
+/// `callNameValidatorExtensionFn`'s closures and `setKnownBuiltins` below
+/// read/write) holding the live builtins-name list. Starts empty; `moo_call`
+/// blocks constructed before the first successful fetch simply see no
+/// warning at all (the validator below explicitly no-ops while this is
+/// still empty), rather than every name looking "unknown" before the real
+/// list has loaded.
+let private knownBuiltinsHolder: obj = emitJsExpr () "({ names: [] })"
+
+/// Sets the live builtins-name list every `moo_call` block's own NAME
+/// field validates against - called from `App.fs` once the same live
+/// builtins cache the MOOcode docs panel already uses
+/// (`LspClient.getMoocodeDocsAsync`) has loaded. `BlocklyEditor.fs` has no
+/// dependency on `LspClient`/the LSP connection itself - `App.fs`'s
+/// `BlocklyToggle` module (which already owns both) is the one that fetches
+/// and calls this, keeping this module's own dependency surface unchanged.
+let setKnownBuiltins (names: string[]) : unit = knownBuiltinsHolder?names <- names
+
+/// `moo_call`'s NAME field is the one place raw-text `IDENT(args)` calls
+/// live in this language - always a builtin, never a user verb (those go
+/// through `moo_verbcall`'s `receiver:name(args)` instead) - so validating
+/// live against the real builtins list is meaningful, not just a random
+/// guess. Warn-only, never rejects: `Field.setValidator`'s real signature
+/// (`core/field.d.ts`) lets a validator return the new value unchanged to
+/// accept-but-flag, which is what this does via `setWarningText` on the
+/// owning block - a not-yet-real builtin name (a typo, or one this
+/// project's own parser would still happily accept per its own lenient
+/// stance) never blocks editing, just flags it. Same non-mutator-safe
+/// shape as `booleanContextWarningExtensionFn` above (only sets a field
+/// validator + warning text, no mutation-related properties).
+let private callNameValidatorExtensionFn: obj =
+    emitJsExpr
+        knownBuiltinsHolder
+        """(function() {
+        var holder = $0;
+        var block = this;
+        var field = this.getField('NAME');
+        field.setValidator(function(newValue) {
+            var known = holder.names;
+            if (known.length > 0 && known.indexOf(newValue) === -1) {
+                block.setWarningText('"' + newValue + '" is not a known MOO builtin function.');
+            } else {
+                block.setWarningText(null);
+            }
+            return newValue;
+        });
+    })"""
+
 let private blockDefinitions: obj =
     emitJsExpr
         ()
@@ -131,7 +211,7 @@ let private blockDefinitions: obj =
         ], "inputsInline": true, "output": null, "style": "math_blocks"},
         {"type": "moo_cond", "message0": "if %1 then %2 else %3", "args0": [
             {"type": "input_value", "name": "COND"}, {"type": "input_value", "name": "THEN"}, {"type": "input_value", "name": "ELSE"}
-        ], "output": null, "style": "logic_blocks"},
+        ], "extensions": ["moo_boolean_context_warning"], "output": null, "style": "logic_blocks"},
         {"type": "moo_assign", "message0": "%1 = %2", "args0": [
             {"type": "input_value", "name": "TARGET"}, {"type": "input_value", "name": "VALUE"}
         ], "inputsInline": true, "output": null, "style": "variable_blocks"},
@@ -154,7 +234,8 @@ let private blockDefinitions: obj =
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
         ], "message2": ")",
-        "mutator": "moo_call_extra_state", "inputsInline": true, "output": null, "style": "procedure_blocks"},
+        "mutator": "moo_call_extra_state", "extensions": ["moo_call_name_validator"],
+        "inputsInline": true, "output": null, "style": "procedure_blocks"},
         {"type": "moo_list", "message0": "{ %1 %2 %3 %4 }", "args0": [
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
@@ -162,11 +243,13 @@ let private blockDefinitions: obj =
         {"type": "moo_if", "message0": "if %1", "args0": [{"type": "input_value", "name": "COND"}],
         "message1": "then %1", "args1": [{"type": "input_statement", "name": "THEN"}],
         "message2": "else %1", "args2": [{"type": "input_statement", "name": "ELSE"}],
+        "extensions": ["moo_boolean_context_warning"],
         "previousStatement": null, "nextStatement": null, "style": "logic_blocks"},
         {"type": "moo_while", "message0": "while [%1] %2", "args0": [
             {"type": "field_input", "name": "LABEL", "text": ""}, {"type": "input_value", "name": "COND"}
         ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
         "tooltip": "The bracketed name is just a label for break/continue to target by name - plain text, not a real MOO variable (unlike fork's task name, below).",
+        "extensions": ["moo_boolean_context_warning"],
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_return", "message0": "return %1", "args0": [{"type": "input_value", "name": "VALUE"}],
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
@@ -179,7 +262,7 @@ let private blockDefinitions: obj =
         {"type": "moo_expr", "message0": "%1 ;", "args0": [{"type": "input_value", "name": "VALUE"}],
         "previousStatement": null, "nextStatement": null, "style": "variable_blocks"},
         {"type": "moo_comment", "message0": "# %1", "args0": [{"type": "field_input", "name": "TEXT", "text": ""}],
-        "previousStatement": null, "nextStatement": null, "style": "text_blocks"},
+        "previousStatement": null, "nextStatement": null, "style": "comment_blocks"},
         {"type": "moo_forlist", "message0": "for %1 [%2] in ( %3 )", "args0": [
             {"type": "field_input", "name": "VAR", "text": "x"},
             {"type": "field_input", "name": "INDEXVAR", "text": ""},
@@ -248,6 +331,8 @@ let private blockDefinitions: obj =
 /// shape.
 let register () : unit =
     blockly?Extensions?register ("moo_call_extra_state", extraStateExtensionFn)
+    blockly?Extensions?register ("moo_boolean_context_warning", booleanContextWarningExtensionFn)
+    blockly?Extensions?register ("moo_call_name_validator", callNameValidatorExtensionFn)
     blockly?common?defineBlocksWithJsonArray (blockDefinitions)
 
 /// One flyout-per-category toolbox listing every block above. `moo_binary`
@@ -318,6 +403,26 @@ let private toolbox: obj =
         ]
     })"""
 
+/// Classic (Blockly's built-in default theme, confirmed the only style set
+/// this workspace would otherwise get - `inject` used to pass no `theme`
+/// option at all) ships `colour_blocks`/`list_blocks`/`logic_blocks`/
+/// `loop_blocks`/`math_blocks`/`procedure_blocks`/`text_blocks`/
+/// `variable_blocks`/`variable_dynamic_blocks`/`hat_blocks` - no comment
+/// style. `base: "classic"` inherits everything else from it; only
+/// `comment_blocks` (referenced by `moo_comment`'s own `"style"` above) is
+/// new - a muted grey, visually distinct from every real-code block, so a
+/// MOO `"note";` comment idiom reads as commentary at a glance instead of
+/// looking like just another statement block.
+let private theme: obj =
+    emitJsExpr
+        ()
+        """({
+        "base": "classic",
+        "blockStyles": {
+            "comment_blocks": {"colourPrimary": "#7f7f7f", "colourSecondary": "#666666", "colourTertiary": "#4d4d4d"}
+        }
+    })"""
+
 /// Mounts a fresh Blockly workspace into `container`, returning the real
 /// `WorkspaceSvg` as an untyped handle - every other function in this
 /// module takes that same handle back, mirroring `Monaco.fs.create`'s own
@@ -327,6 +432,7 @@ let inject (container: Browser.Types.HTMLElement) : obj =
     let options =
         createObj
             [ "toolbox" ==> toolbox
+              "theme" ==> theme
               "trashcan" ==> true
               "scrollbars" ==> true
               "zoom" ==> createObj [ "controls" ==> true; "wheel" ==> true; "startScale" ==> 0.9 ]
