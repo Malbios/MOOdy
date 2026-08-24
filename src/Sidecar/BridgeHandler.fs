@@ -223,6 +223,23 @@ let private pumpTcpToWebSocket (session: Session) (webSocket: WebSocket) (ct: Ca
 /// both `BridgeHandler` and `IdeActions`) rather than referenced directly
 /// here, to avoid a circular module dependency (`IdeActions` needs
 /// `Session`/`evalOnSession` from this module).
+///
+/// `ReceiveAsync` only fills `buffer` with one WebSocket *frame* at a time
+/// (up to `bufferSize` bytes), not necessarily one complete *message* -
+/// `result.EndOfMessage` is false on every frame but the last one of a
+/// message larger than `bufferSize`. Confirmed live as a real bug, not a
+/// hypothetical: a `save-verb`/`check-verb-syntax` action embeds a verb's
+/// full source as one JSON payload, and a verb with enough doc-comment text
+/// (`$string_utils:substitute`, in the field) produces a payload over 8KB -
+/// large enough to arrive as several frames. Treating each frame as its own
+/// complete message (the previous version of this loop did) meant every
+/// truncated JSON fragment failed `JsonDocument.Parse` in `tryDispatch`,
+/// which - correctly, for the actual "not JSON, forward as a raw typed
+/// command" case - forwarded each fragment straight to the MOO connection,
+/// where it showed up as several garbled `You see no "..." here.` responses
+/// to the player. `messageBuffer` accumulates frames across `ReceiveAsync`
+/// calls; only once `EndOfMessage` is true is the *complete* message handed
+/// to `tryDispatch`/forwarded.
 let private pumpWebSocketToTcp
     (session: Session)
     (webSocket: WebSocket)
@@ -231,6 +248,7 @@ let private pumpWebSocketToTcp
     : Task =
     task {
         let buffer = Array.zeroCreate<byte> bufferSize
+        let messageBuffer = ResizeArray<byte>()
         let mutable finished = false
 
         while not finished do
@@ -238,23 +256,25 @@ let private pumpWebSocketToTcp
 
             match result.MessageType with
             | WebSocketMessageType.Close -> finished <- true
-            | WebSocketMessageType.Text ->
-                let text = Encoding.UTF8.GetString(buffer, 0, result.Count)
-                let! handled = tryDispatch text ct
+            | messageType ->
+                if result.Count > 0 then
+                    messageBuffer.AddRange(buffer.[0 .. result.Count - 1])
 
-                if not handled then
-                    let bytes = Encoding.UTF8.GetBytes(text + "\r\n")
-                    do! writeBytesLocked session bytes ct
-            | _ ->
-                let crlf = Encoding.ASCII.GetBytes("\r\n")
+                if result.EndOfMessage then
+                    let messageBytes = messageBuffer.ToArray()
+                    messageBuffer.Clear()
 
-                let combined =
-                    if result.Count > 0 then
-                        Array.append buffer.[0 .. result.Count - 1] crlf
-                    else
-                        crlf
+                    match messageType with
+                    | WebSocketMessageType.Text ->
+                        let text = Encoding.UTF8.GetString(messageBytes)
+                        let! handled = tryDispatch text ct
 
-                do! writeBytesLocked session combined ct
+                        if not handled then
+                            let bytes = Encoding.UTF8.GetBytes(text + "\r\n")
+                            do! writeBytesLocked session bytes ct
+                    | _ ->
+                        let crlf = Encoding.ASCII.GetBytes("\r\n")
+                        do! writeBytesLocked session (Array.append messageBytes crlf) ct
     }
 
 /// Owns the WebSocket and TcpClient for the lifetime of one bridged session.
