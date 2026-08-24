@@ -12,24 +12,30 @@
 /// JSON is a separate, mechanical concern for once this mapping itself is
 /// proven - not something to design blind against here.
 ///
-/// Covers the full `Ast.Stmt`/`Ast.Expr` grammar except two shapes that
-/// stay on the `SUnsupported`/`VUnsupported` escape hatch deliberately:
-/// computed-name `Prop`/`VerbCall` (`obj.(expr)`/`obj:(expr)(...)` - the
-/// research doc's own reasoning stands: "invisible to static analysis
-/// already, zero upside to a second block variant for it") and
-/// `ErrorStmt` (a parse-failure placeholder, not a reconstructable
-/// construct at all - `Printer.fs` takes the same stance).
+/// Covers the full `Ast.Stmt`/`Ast.Expr` grammar - including computed-name
+/// `Prop`/`VerbCall` (`obj.(expr)`/`obj:(expr)(...)`, `VComputedProp`/
+/// `VComputedVerbCall` below) - except one shape that stays on the
+/// `SUnsupported` escape hatch: `ErrorStmt` (a parse-failure placeholder,
+/// not a reconstructable construct at all - `Printer.fs` takes the same
+/// stance). Computed-name access was deliberately deferred in an earlier
+/// pass, on a "zero upside to a second block variant for it" static-
+/// analysis argument (go-to-definition/hover can't resolve a computed name
+/// either way) - true, but orthogonal to this module's own job: it never
+/// claimed representability was the blocker, and `Printer.fs` already
+/// prints the generic `Prop(receiver, nameExpr, ...)`/`VerbCall(receiver,
+/// nameExpr, args, ...)` shape correctly (it operates on `Ast.Expr`
+/// directly, not `BlockValue`), so no `Printer.fs` changes were needed to
+/// close this gap.
 ///
-/// Both directions are total functions, never throwing: anything that
-/// still lands on the escape hatch carries the original `Ast` node
-/// verbatim, the same "degrade a piece, don't refuse the whole tree"
-/// instinct `Ast.ErrorStmt` already uses for a parse failure. This is
-/// deliberately granular, not whole-statement: a `Binary` expression with
-/// one unsupported operand still renders as a real `VBinary` block with a
-/// `VUnsupported` leaf plugged into just that one socket, and an `If` with
-/// one unsupported statement in its body still renders as a real `SIf`
-/// block with just that one body line as a raw leaf - not the whole
-/// containing construct collapsing to unsupported.
+/// Both directions are total functions, never throwing: an `ErrorStmt`
+/// anywhere still lands on `SUnsupported`, carrying the original `Ast.Stmt`
+/// verbatim so `blockToStmt` can still reproduce it exactly. This is
+/// deliberately granular, not whole-verb: an `If` with one unsupported
+/// (`ErrorStmt`) statement in its body still renders as a real `SIf` block
+/// with just that one body line as a raw `SUnsupported` leaf - not the
+/// whole containing construct collapsing to unsupported. `BlockValue` (the
+/// expression side) no longer has an escape hatch at all - every `Ast.Expr`
+/// case, including computed-name `Prop`/`VerbCall`, maps to a real case.
 module Language.Blocks
 
 open Language.Ast
@@ -65,11 +71,16 @@ type BlockValue =
     | VCond of BlockValue * BlockValue * BlockValue
     | VAssign of BlockValue * BlockValue
     /// Literal-name property access only (`obj.prop`/`obj.:waifprop`) - the
-    /// computed form (`obj.(expr)`) stays on the escape hatch, see the
-    /// module's own doc comment.
+    /// computed form is `VComputedProp` below.
     | VProp of receiver: BlockValue * name: string
-    /// Literal-name verb calls only, same reasoning as `VProp`.
+    /// Literal-name verb calls only, same reasoning as `VProp` - the
+    /// computed form is `VComputedVerbCall` below.
     | VVerbCall of receiver: BlockValue * name: string * args: BlockArg list
+    /// `obj.(expr)` - the property name is itself an expression, not a
+    /// literal string (the only real difference from `VProp`).
+    | VComputedProp of receiver: BlockValue * name: BlockValue
+    /// `obj:(expr)(args)` - the computed-name counterpart to `VVerbCall`.
+    | VComputedVerbCall of receiver: BlockValue * name: BlockValue * args: BlockArg list
     | VCall of name: string * args: BlockArg list
     | VListLit of BlockArg list
     | VMapLit of (BlockValue * BlockValue) list
@@ -88,10 +99,6 @@ type BlockValue =
     /// `` `expr ! codes => fallback' `` - `fallback` is `None` when
     /// omitted, matching `Ast.Catch` exactly.
     | VCatch of tryValue: BlockValue * codes: BlockCodes * fallback: BlockValue option
-    /// The escape hatch - computed-name `Prop`/`VerbCall` only (see the
-    /// module's own doc comment) - carrying the real `Expr` verbatim so
-    /// `blockToExpr` can still reproduce it exactly.
-    | VUnsupported of Expr
 
 /// A call/list argument - mirrors `Ast.Arg` exactly.
 and BlockArg =
@@ -178,7 +185,10 @@ let rec exprToBlock (expr: Expr) : BlockValue =
     | Cond(c, t, f) -> VCond(exprToBlock c, exprToBlock t, exprToBlock f)
     | Assign(target, value) -> VAssign(exprToBlock target, exprToBlock value)
     | Prop(receiver, StrLit name, _, _) -> VProp(exprToBlock receiver, name)
+    | Prop(receiver, nameExpr, _, _) -> VComputedProp(exprToBlock receiver, exprToBlock nameExpr)
     | VerbCall(receiver, StrLit name, args, _, _) -> VVerbCall(exprToBlock receiver, name, args |> List.map (argToBlock exprToBlock))
+    | VerbCall(receiver, nameExpr, args, _, _) ->
+        VComputedVerbCall(exprToBlock receiver, exprToBlock nameExpr, args |> List.map (argToBlock exprToBlock))
     | Call(name, args, _, _) -> VCall(name, args |> List.map (argToBlock exprToBlock))
     | ListLit args -> VListLit(args |> List.map (argToBlock exprToBlock))
     | MapLit pairs -> VMapLit(pairs |> List.map (fun (k, v) -> exprToBlock k, exprToBlock v))
@@ -188,8 +198,6 @@ let rec exprToBlock (expr: Expr) : BlockValue =
     | LastIndex -> VLastIndex
     | Scatter(items, value) -> VScatter(items |> List.map scatterItemToBlock, exprToBlock value)
     | Catch(e, codes, fallback) -> VCatch(exprToBlock e, codesToBlock codes, fallback |> Option.map exprToBlock)
-    | Prop _
-    | VerbCall _ -> VUnsupported expr
 
 and private scatterItemToBlock (item: ScatterItem) : BlockScatterItem =
     match item with
@@ -222,7 +230,10 @@ let rec blockToExpr (block: BlockValue) : Expr =
     | VCond(c, t, f) -> Cond(blockToExpr c, blockToExpr t, blockToExpr f)
     | VAssign(target, value) -> Assign(blockToExpr target, blockToExpr value)
     | VProp(receiver, name) -> Prop(blockToExpr receiver, StrLit name, 1, 1)
+    | VComputedProp(receiver, name) -> Prop(blockToExpr receiver, blockToExpr name, 1, 1)
     | VVerbCall(receiver, name, args) -> VerbCall(blockToExpr receiver, StrLit name, args |> List.map (argToExpr blockToExpr), 1, 1)
+    | VComputedVerbCall(receiver, name, args) ->
+        VerbCall(blockToExpr receiver, blockToExpr name, args |> List.map (argToExpr blockToExpr), 1, 1)
     | VCall(name, args) -> Call(name, args |> List.map (argToExpr blockToExpr), 1, 1)
     | VListLit args -> ListLit(args |> List.map (argToExpr blockToExpr))
     | VMapLit pairs -> MapLit(pairs |> List.map (fun (k, v) -> blockToExpr k, blockToExpr v))
@@ -232,7 +243,6 @@ let rec blockToExpr (block: BlockValue) : Expr =
     | VLastIndex -> LastIndex
     | VScatter(items, value) -> Scatter(items |> List.map blockToScatterItem, blockToExpr value)
     | VCatch(e, codes, fallback) -> Catch(blockToExpr e, blockToCodes codes, fallback |> Option.map blockToExpr)
-    | VUnsupported expr -> expr
 
 and private blockToScatterItem (item: BlockScatterItem) : ScatterItem =
     match item with
@@ -305,14 +315,15 @@ let astToBlocks (stmts: Stmt list) : BlockStmt list = stmts |> List.map stmtToBl
 let blocksToAst (blocks: BlockStmt list) : Stmt list = blocks |> List.map blockToStmt
 
 /// Whether a `BlockValue`/`BlockStmt` (or, transitively, everything under
-/// it) is real block structure with no `VUnsupported`/`SUnsupported` leaf
-/// anywhere - what a real toggle would call to decide whether switching a
-/// verb to block view is safe. This only answers "would it be lossy" -
-/// what to actually do when it would (warn, refuse, silently fall back to
-/// text) is still an open product question, see the card's own notes.
+/// it) is real block structure with no `SUnsupported` leaf anywhere (the
+/// only escape hatch left, now that every `Ast.Expr` case - including
+/// computed-name `Prop`/`VerbCall` - has a real `BlockValue`) - what a real
+/// toggle would call to decide whether switching a verb to block view is
+/// safe. This only answers "would it be lossy" - what to actually do when
+/// it would (warn, refuse, silently fall back to text) is still an open
+/// product question, see the card's own notes.
 let rec private valueIsFullyRepresentable (value: BlockValue) : bool =
     match value with
-    | VUnsupported _ -> false
     | VIntLit _
     | VFloatLit _
     | VStrLit _
@@ -327,7 +338,10 @@ let rec private valueIsFullyRepresentable (value: BlockValue) : bool =
     | VCond(c, t, f) -> valueIsFullyRepresentable c && valueIsFullyRepresentable t && valueIsFullyRepresentable f
     | VAssign(target, v) -> valueIsFullyRepresentable target && valueIsFullyRepresentable v
     | VProp(receiver, _) -> valueIsFullyRepresentable receiver
+    | VComputedProp(receiver, name) -> valueIsFullyRepresentable receiver && valueIsFullyRepresentable name
     | VVerbCall(receiver, _, args) -> valueIsFullyRepresentable receiver && args |> List.forall argIsFullyRepresentable
+    | VComputedVerbCall(receiver, name, args) ->
+        valueIsFullyRepresentable receiver && valueIsFullyRepresentable name && args |> List.forall argIsFullyRepresentable
     | VCall(_, args) -> args |> List.forall argIsFullyRepresentable
     | VListLit args -> args |> List.forall argIsFullyRepresentable
     | VMapLit pairs -> pairs |> List.forall (fun (k, v) -> valueIsFullyRepresentable k && valueIsFullyRepresentable v)
@@ -375,6 +389,5 @@ let rec private stmtIsFullyRepresentable (stmt: BlockStmt) : bool =
     | STryFinally(body, handler) -> (body |> List.forall stmtIsFullyRepresentable) && (handler |> List.forall stmtIsFullyRepresentable)
 
 /// Whether every construct in `stmts` maps to a real block - no
-/// `VUnsupported`/`SUnsupported` anywhere in the tree `astToBlocks` would
-/// produce for it.
+/// `SUnsupported` anywhere in the tree `astToBlocks` would produce for it.
 let isFullyRepresentable (stmts: Stmt list) : bool = stmts |> astToBlocks |> List.forall stmtIsFullyRepresentable

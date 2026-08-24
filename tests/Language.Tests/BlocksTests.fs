@@ -177,18 +177,24 @@ let ``a verb body combining for, try/except and scatter-assignment round-trips``
           ) ]
 
 [<Fact>]
-let ``a computed-name verb call is still out of scope and round-trips via the UnsupportedBlock escape hatch`` () =
-    // Computed-name Prop/VerbCall stay deliberately deferred (see
-    // `Blocks.fs`'s own doc comment) - unlike Catch/TryFinally/for-loops,
-    // this one has no plan to ever become a real block.
-    let computedCall = VerbCall(id_ "obj", id_ "verbNameVar", [], 1, 1)
-    let stmt = ExprStmt(Binary(Add, IntLit 1L, computedCall))
+let ``computed-name property access round-trips`` () =
+    // obj.(expr) - the property name is itself an expression, matching
+    // VComputedProp exactly (as opposed to VProp's literal-name form,
+    // tested above).
+    assertRoundTrips [ ExprStmt(Prop(id_ "obj", id_ "propNameVar", 1, 1)) ]
+    assertRoundTrips [ ExprStmt(Prop(id_ "obj", Binary(Add, StrLit "prop_", id_ "suffix"), 1, 1)) ]
 
-    match stmtToBlock stmt with
-    | SExpr(VBinary(Add, VIntLit 1L, VUnsupported inner)) -> Assert.Equal<Expr>(computedCall, inner)
-    | other -> Assert.Fail(sprintf "expected a granular VUnsupported leaf, got %A" other)
+[<Fact>]
+let ``computed-name verb call round-trips, including a splice argument`` () =
+    assertRoundTrips
+        [ ExprStmt(VerbCall(id_ "obj", id_ "verbNameVar", [ Normal(StrLit "hi"); Splice(id_ "args") ], 1, 1)) ]
 
-    assertRoundTrips [ stmt ]
+[<Fact>]
+let ``a computed-name verb call nested inside another expression still round-trips granularly`` () =
+    // Same "granular, not whole-statement" reconstruction every other
+    // construct here gets - no escape hatch involved anymore, this is
+    // just an ordinary VComputedVerbCall leaf inside a VBinary.
+    assertRoundTrips [ ExprStmt(Binary(Add, IntLit 1L, VerbCall(id_ "obj", id_ "verbNameVar", [], 1, 1))) ]
 
 [<Fact>]
 let ``a bare string-literal statement is recognized as a comment block, not a generic expression block`` () =
@@ -229,15 +235,14 @@ let ``isFullyRepresentable is true for a verb body with no unsupported construct
     Assert.True(isFullyRepresentable stmts)
 
 [<Fact>]
-let ``isFullyRepresentable is false when an unsupported construct is nested arbitrarily deep`` () =
-    let computedCall = VerbCall(id_ "obj", id_ "verbNameVar", [], 1, 1)
+let ``isFullyRepresentable is false when an ErrorStmt (the one remaining unsupported shape) is nested arbitrarily deep`` () =
+    let errorStmt = ErrorStmt("bad", 1, 1)
 
-    // Buried three levels down: while -> if -> expression operand.
-    let stmts =
-        [ While(None, id_ "cond", [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, computedCall)) ]) ], None) ]) ]
+    // Buried two levels down: while -> if -> body statement.
+    let stmts = [ While(None, id_ "cond", [ If([ (id_ "cond2", [ errorStmt ]) ], None) ]) ]
 
     Assert.False(isFullyRepresentable stmts)
-    Assert.False(isFullyRepresentable [ ErrorStmt("bad", 1, 1) ])
+    Assert.False(isFullyRepresentable [ errorStmt ])
 
 [<Fact>]
 let ``an ErrorStmt is the one remaining unsupported statement shape, and degrades to a leaf inside an if body`` () =

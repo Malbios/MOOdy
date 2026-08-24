@@ -187,13 +187,19 @@ let ``scatter-assignment, mixing required/optional (with and without a default)/
           ) ]
 
 [<Fact>]
-let ``a construct outside this slice's coverage fails the whole chain, rather than silently misconverting`` () =
-    // Computed-name Prop (`obj.(expr)`, as opposed to the literal-name
-    // `obj.prop` form) is the one remaining permanently out-of-scope
-    // construct after this slice - see Blocks.fs:191-192, where it falls
-    // through to the VUnsupported escape hatch (Blocks.fs's own, not just
-    // this module's).
-    let stmts = [ ExprStmt(Prop(id_ "obj", id_ "name", 1, 1)) ]
+let ``computed-name property access and verb calls round-trip, including a splice argument`` () =
+    assertRoundTrips [ ExprStmt(Prop(id_ "obj", id_ "propNameVar", 1, 1)) ]
+    assertRoundTrips [ ExprStmt(Prop(id_ "obj", Binary(Add, StrLit "prop_", id_ "suffix"), 1, 1)) ]
+    assertRoundTrips
+        [ ExprStmt(VerbCall(id_ "obj", id_ "verbNameVar", [ Normal(StrLit "hi"); Splice(id_ "args") ], 1, 1)) ]
+
+[<Fact>]
+let ``a genuine parse error is the only remaining construct that fails the whole chain, rather than silently misconverting`` () =
+    // ErrorStmt is the one remaining unsupported shape after this slice -
+    // not a construct-coverage gap (every real Ast.Expr/Stmt case maps to
+    // a real block now, including computed-name Prop/VerbCall, tested
+    // above), just a parse failure with no Ast to represent at all.
+    let stmts = [ ErrorStmt("bad", 1, 1) ]
 
     match stmts |> astToBlocks |> stmtsToJson with
     | None -> Assert.Fail("expected stmtsToJson to still produce a (one-way) moo_unsupported placeholder")
@@ -312,19 +318,23 @@ let ``isFullyMappable is true for every construct this module actually maps to a
     Assert.True(isFullyMappable blocks)
 
 [<Fact>]
-let ``isFullyMappable is false for the one remaining permanently out-of-scope construct (computed-name Prop/VerbCall) - Blocks.isFullyRepresentable agrees, since it's Blocks.fs's own escape hatch too`` () =
-    let computedProp = ExprStmt(Prop(id_ "obj", id_ "name", 1, 1))
+let ``isFullyMappable is true even when computed-name Prop/VerbCall is present - the last construct-coverage gap, now closed`` () =
+    let stmts =
+        [ ExprStmt(Prop(id_ "obj", id_ "propNameVar", 1, 1))
+          ExprStmt(VerbCall(id_ "obj", id_ "verbNameVar", [ Normal(id_ "x") ], 1, 1)) ]
 
-    Assert.False(isFullyRepresentable [ computedProp ])
-    Assert.False(isFullyMappable (astToBlocks [ computedProp ]))
+    Assert.True(isFullyMappable (astToBlocks stmts))
+
+[<Fact>]
+let ``isFullyMappable is false for the one remaining unsupported construct (a genuine parse error) - Blocks.isFullyRepresentable agrees, since it's Blocks.fs's own escape hatch too`` () =
+    let errorStmt = ErrorStmt("bad", 1, 1)
+
+    Assert.False(isFullyRepresentable [ errorStmt ])
+    Assert.False(isFullyMappable (astToBlocks [ errorStmt ]))
 
 [<Fact>]
 let ``isFullyMappable is false when the unmappable construct is nested arbitrarily deep`` () =
-    let stmts =
-        [ While(
-              None,
-              id_ "cond",
-              [ If([ (id_ "cond2", [ ExprStmt(Binary(Add, IntLit 1L, Prop(id_ "obj", id_ "name", 1, 1))) ]) ], None) ]
-          ) ]
+    let errorStmt = ErrorStmt("bad", 1, 1)
+    let stmts = [ While(None, id_ "cond", [ If([ (id_ "cond2", [ errorStmt ]) ], None) ]) ]
 
     Assert.False(isFullyMappable (astToBlocks stmts))

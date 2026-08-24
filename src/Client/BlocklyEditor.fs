@@ -218,11 +218,21 @@ let private blockDefinitions: obj =
         {"type": "moo_prop", "message0": "%1 . %2", "args0": [
             {"type": "input_value", "name": "RECEIVER"}, {"type": "field_input", "name": "NAME", "text": "prop"}
         ], "inputsInline": true, "output": null, "style": "variable_blocks"},
+        {"type": "moo_computed_prop", "message0": "%1 . ( %2 )", "args0": [
+            {"type": "input_value", "name": "RECEIVER"}, {"type": "input_value", "name": "NAME"}
+        ], "inputsInline": true, "output": null, "style": "variable_blocks"},
         {"type": "moo_index", "message0": "%1 [ %2 ]", "args0": [
             {"type": "input_value", "name": "VALUE"}, {"type": "input_value", "name": "INDEX"}
         ], "inputsInline": true, "output": null, "style": "list_blocks"},
         {"type": "moo_verbcall", "message0": "%1 : %2 (", "args0": [
             {"type": "input_value", "name": "RECEIVER"}, {"type": "field_input", "name": "NAME", "text": "verb"}
+        ], "message1": "%1 %2 %3 %4", "args1": [
+            {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
+            {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
+        ], "message2": ")",
+        "mutator": "moo_call_extra_state", "inputsInline": true, "output": null, "style": "procedure_blocks"},
+        {"type": "moo_computed_verbcall", "message0": "%1 : ( %2 ) (", "args0": [
+            {"type": "input_value", "name": "RECEIVER"}, {"type": "input_value", "name": "NAME"}
         ], "message1": "%1 %2 %3 %4", "args1": [
             {"type": "input_value", "name": "ARG0"}, {"type": "input_value", "name": "ARG1"},
             {"type": "input_value", "name": "ARG2"}, {"type": "input_value", "name": "ARG3"}
@@ -388,7 +398,9 @@ let private toolbox: obj =
                 {"kind": "block", "type": "moo_obj"},
                 {"kind": "block", "type": "moo_err"},
                 {"kind": "block", "type": "moo_prop"},
-                {"kind": "block", "type": "moo_verbcall"}
+                {"kind": "block", "type": "moo_computed_prop"},
+                {"kind": "block", "type": "moo_verbcall"},
+                {"kind": "block", "type": "moo_computed_verbcall"}
             ]},
             {"kind": "category", "name": "Functions", "colour": "290", "contents": [
                 {"kind": "block", "type": "moo_call"}

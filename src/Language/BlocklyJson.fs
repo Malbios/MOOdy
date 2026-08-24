@@ -8,24 +8,20 @@
 /// real JS object to/from `JsonValue` lives in `src/Client/BlocklyEditor.fs`
 /// - this module never touches `obj`/dynamic JS at all.
 ///
-/// Covers every construct in `Blocks.fs` (see that module's own doc
-/// comment for the full list) except one permanently out-of-scope
-/// exception: computed-name `Prop`/`VerbCall` (`obj.(expr)`/
-/// `obj:(expr)(...)`) - unrepresentable by design, since it stays on
-/// `Blocks.fs`'s own `VUnsupported` escape hatch (see that module's doc
-/// comment on why). Everything else - every literal kind, `Ident`,
-/// `Binary`/`Unary` (one Blockly block type per family with an `OP`
-/// field, not one block type per operator), `Cond`, `Assign`,
-/// `Prop`/`VerbCall`/`Call`, `ListLit`, `Index`, `Range`,
+/// Covers the full `Ast.Stmt`/`Ast.Expr` grammar, matching `Blocks.fs`'s
+/// own full coverage exactly (see that module's own doc comment) - every
+/// literal kind, `Ident`, `Binary`/`Unary` (one Blockly block type per
+/// family with an `OP` field, not one block type per operator), `Cond`,
+/// `Assign`, `Prop`/`VerbCall`/`Call` (both literal- and computed-name
+/// forms - `moo_computed_prop`/`moo_computed_verbcall`, a `NAME` value
+/// input instead of a text field), `ListLit`, `Index`, `Range`,
 /// `FirstIndex`/`LastIndex`, `MapLit`, `If`, `While`, `ForList`,
 /// `ForRange`, `Fork`, `TryFinally`, `TryExcept`, `Scatter`, `Catch` (both
 /// the bare `ANY` form and an explicit code list), `Return`/`Break`/
-/// `Continue`, `ExprStmt`, `SComment` - maps to a real Blockly block type.
-/// A `Prop`/`VerbCall` carrying a computed name still maps one-way to a
-/// `moo_unsupported`/`moo_unsupported_expr` placeholder carrying a debug
-/// string - not meant to ever actually reach a real workspace in
-/// practice, since the eventual UI gates the toggle on `isFullyMappable`
-/// first; it exists only so this module's functions stay total.
+/// `Continue`, `ExprStmt`, `SComment` - every one maps to a real Blockly
+/// block type. The only remaining refusal reason anywhere in the toggle is
+/// a genuine parse error (`ErrorStmt`/`Blocks.fs`'s `SUnsupported`) - not a
+/// construct-coverage gap of any kind.
 ///
 /// `TryExcept`'s except-arms are a variable-arity list that reuses
 /// Blockly's own statement-`next`-chain mechanism directly (`armsToJson`/
@@ -218,9 +214,9 @@ let rec private argsShape (prefix: string) (args: BlockArg list) : (string * Jso
 
     inputs, extraState
 
-/// `BlockValue` -> Blockly's real per-block JSON shape, total (anything
-/// outside this slice's covered subset becomes a `moo_unsupported_expr`
-/// debug placeholder - see the module's own doc comment).
+/// `BlockValue` -> Blockly's real per-block JSON shape, total - every
+/// `Ast.Expr` case has a real block type, no debug-placeholder fallback
+/// needed (see the module's own doc comment).
 and valueToJson (value: BlockValue) : JsonValue =
     let obj blockType fields inputs extraState = JVObject(makeBlock blockType fields inputs extraState)
     let v1 name value = [ name, valueSlot (valueToJson value) ]
@@ -238,9 +234,13 @@ and valueToJson (value: BlockValue) : JsonValue =
     | VCond(c, t, f) -> obj "moo_cond" [] (v1 "COND" c @ v1 "THEN" t @ v1 "ELSE" f) []
     | VAssign(target, value) -> obj "moo_assign" [] (v1 "TARGET" target @ v1 "VALUE" value) []
     | VProp(receiver, name) -> obj "moo_prop" [ "NAME", JVString name ] (v1 "RECEIVER" receiver) []
+    | VComputedProp(receiver, name) -> obj "moo_computed_prop" [] (v1 "RECEIVER" receiver @ v1 "NAME" name) []
     | VVerbCall(receiver, name, args) ->
         let inputs, extraState = argsShape "ARG" args
         obj "moo_verbcall" [ "NAME", JVString name ] (v1 "RECEIVER" receiver @ inputs) extraState
+    | VComputedVerbCall(receiver, name, args) ->
+        let inputs, extraState = argsShape "ARG" args
+        obj "moo_computed_verbcall" [] (v1 "RECEIVER" receiver @ v1 "NAME" name @ inputs) extraState
     | VCall(name, args) ->
         let inputs, extraState = argsShape "ARG" args
         obj "moo_call" [ "NAME", JVString name ] inputs extraState
@@ -263,7 +263,6 @@ and valueToJson (value: BlockValue) : JsonValue =
     | VScatter(items, v) ->
         let itemInputs = items |> List.mapi (fun i item -> sprintf "ITEM%d" i, valueSlot (scatterItemToJson item))
         obj "moo_scatter" [] (itemInputs @ v1 "VALUE" v) []
-    | VUnsupported _ -> obj "moo_unsupported_expr" [ "DEBUG", JVString(sprintf "%A" value) ] [] []
 
 /// Shared by `VCatch` and `moo_except_arm` (an except-arm's own `Codes`) -
 /// both need "a `KIND` dropdown (`ANY`/`CODES`) plus fixed `CODE0..CODEn`
@@ -292,10 +291,10 @@ and private scatterItemToJson (item: BlockScatterItem) : JsonValue =
     | BOptional(name, def) ->
         makeItem "OPTIONAL" name (def |> Option.map (fun d -> [ "DEFAULT", valueSlot (valueToJson d) ]) |> Option.defaultValue [])
 
-/// The reverse of `valueToJson` for the covered subset - `None` for a
-/// block type this slice doesn't map (including `moo_unsupported_expr`,
-/// which is one-way only: a defensive fallback `valueToJson` produces,
-/// never something this function is expected to reconstruct).
+/// The reverse of `valueToJson` - `None` for a block type this module
+/// doesn't recognize at all (malformed/foreign JSON, not a coverage gap -
+/// every real block type `valueToJson` can produce has a matching case
+/// here).
 let rec jsonToValue (json: JsonValue) : BlockValue option =
     let fields = field "fields" (asFields json) |> Option.map asFields |> Option.defaultValue []
     let inputs = field "inputs" (asFields json) |> Option.map asFields |> Option.defaultValue []
@@ -372,9 +371,17 @@ let rec jsonToValue (json: JsonValue) : BlockValue option =
         match field "NAME" fields |> Option.bind asString, value1 "RECEIVER" with
         | Some name, Some r -> Some(VProp(r, name))
         | _ -> None
+    | Some "moo_computed_prop" ->
+        match value1 "RECEIVER", value1 "NAME" with
+        | Some r, Some n -> Some(VComputedProp(r, n))
+        | _ -> None
     | Some "moo_verbcall" ->
         match field "NAME" fields |> Option.bind asString, value1 "RECEIVER", args () with
         | Some name, Some r, Some a -> Some(VVerbCall(r, name, a))
+        | _ -> None
+    | Some "moo_computed_verbcall" ->
+        match value1 "RECEIVER", value1 "NAME", args () with
+        | Some r, Some n, Some a -> Some(VComputedVerbCall(r, n, a))
         | _ -> None
     | Some "moo_call" ->
         match field "NAME" fields |> Option.bind asString, args () with
@@ -842,19 +849,19 @@ let parseJsonText (text: string) : JsonValue option =
 /// this module defines - not `Blocks.isFullyRepresentable` (which reflects
 /// `Blocks.fs`'s own, wider coverage: `ForList`/`ForRange`/`Fork`/
 /// `TryExcept`/`TryFinally`/`Scatter`/`Catch` all have real `BlockStmt`/
-/// `BlockValue` cases there). This module's own JS-side block set (see
-/// `Client/BlocklyEditor.fs`) is deliberately smaller for this slice, so a
-/// verb `Blocks.isFullyRepresentable` calls fully representable can still
-/// contain a construct with **no registered Blockly block type at all** -
-/// confirmed live: loading a `moo_unsupported`/`moo_unsupported_expr`
-/// placeholder (what `stmtToJsonFields`/`valueToJson`'s own fallback arms
-/// produce for exactly this gap) into a real workspace throws `Invalid
-/// block definition for type: moo_unsupported`, not a graceful no-op. A
-/// real toggle needs to gate on *this* check, not `isFullyRepresentable`
-/// alone, before ever calling `stmtsToJson`/`loadStateText`.
+/// `BlockValue` cases there). After computed-name `Prop`/`VerbCall` closed
+/// the last gap, every `BlockValue` case has a real Blockly block type, so
+/// this now always returns `true` for a well-formed value - kept as an
+/// explicit, exhaustive per-case function anyway (not collapsed to a
+/// constant) so a future `BlockValue` case with no matching block would
+/// fail to compile here rather than silently mapping to a placeholder, the
+/// same defensive-exhaustiveness stance `Blocks.fs`'s own
+/// `valueIsFullyRepresentable` already takes. `stmtIsFullyMappable` below
+/// is where a real `false` can still occur (`SUnsupported`, for a genuine
+/// parse error - `ErrorStmt` has no block representation at all, since
+/// there's no `Ast` to represent).
 let rec private valueIsFullyMappable (value: BlockValue) : bool =
     match value with
-    | VUnsupported _ -> false
     | VIntLit _
     | VFloatLit _
     | VStrLit _
@@ -869,7 +876,10 @@ let rec private valueIsFullyMappable (value: BlockValue) : bool =
     | VCond(c, t, f) -> valueIsFullyMappable c && valueIsFullyMappable t && valueIsFullyMappable f
     | VAssign(target, v) -> valueIsFullyMappable target && valueIsFullyMappable v
     | VProp(receiver, _) -> valueIsFullyMappable receiver
+    | VComputedProp(receiver, name) -> valueIsFullyMappable receiver && valueIsFullyMappable name
     | VVerbCall(receiver, _, args) -> valueIsFullyMappable receiver && args |> List.forall argIsFullyMappable
+    | VComputedVerbCall(receiver, name, args) ->
+        valueIsFullyMappable receiver && valueIsFullyMappable name && args |> List.forall argIsFullyMappable
     | VCall(_, args) -> args |> List.forall argIsFullyMappable
     | VListLit args -> args |> List.forall argIsFullyMappable
     | VIndex(e, i) -> valueIsFullyMappable e && valueIsFullyMappable i
