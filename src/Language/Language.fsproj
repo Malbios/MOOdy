@@ -8,7 +8,10 @@
     <Compile Include="Lexer.fs" />
     <Compile Include="Sugar.fs" />
     <Compile Include="Ast.fs" />
+    <Compile Include="Printer.fs" />
     <Compile Include="Parser.fs" />
+    <Compile Include="Blocks.fs" />
+    <Compile Include="BlocklyJson.fs" />
   </ItemGroup>
 
 </Project>

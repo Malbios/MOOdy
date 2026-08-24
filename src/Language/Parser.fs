@@ -106,8 +106,6 @@ let parse (tokens: Token[]) : Stmt list =
     // Expressions
     // ---------------------------------------------------------------
 
-    let rec parseExpr () = parseAssign ()
-
     /// True when the current token is `{` and, scanning forward by brace
     /// depth (pure lookahead, no consumption - tokens are already a random
     /// -access array so this is cheap), the matching `}` is immediately
@@ -117,7 +115,7 @@ let parse (tokens: Token[]) : Stmt list =
     /// only this lookahead tells them apart. Scatter's own grammar
     /// (`parser.y:466-495`/`742-779`) never nests another top-level `{` at
     /// the same depth in a way this depth-counter would mis-track.
-    and looksLikeScatterAssignment () : bool =
+    let rec looksLikeScatterAssignment () : bool =
         if not (check TLBrace) then
             false
         else
@@ -774,5 +772,23 @@ let parse (tokens: Token[]) : Stmt list =
             stmts.Add(parseStatementWithRecovery stoppers)
 
         List.ofSeq stmts
+
+    /// A plain alias for `parseAssign` - kept as the last member of this
+    /// `let rec ... and ...` chain (not the first, where it originally
+    /// sat) so Fable's compiled output doesn't reference `parseAssign`
+    /// before its own binding initializes: Fable compiles a body-less
+    /// alias like `parseExpr () = parseAssign ()` as a direct `const
+    /// parseExpr = parseAssign` value assignment rather than a wrapping
+    /// closure, and JS's `const`/`let` bindings within one scope are not
+    /// hoisted - reading one before its own initializer line has run
+    /// throws `ReferenceError: Cannot access 'parseAssign' before
+    /// initialization`. Confirmed live: this parser had apparently never
+    /// been exercised from Fable-compiled code before the Blockly visual
+    /// editor spike's toggle became the first client-side caller of
+    /// `Parser.parse` (`Sugar.fs`, the only other client-side consumer of
+    /// this language's tooling, only ever calls `Lexer.tokenize`) - .NET
+    /// has no such ordering constraint within a mutually-recursive group,
+    /// so this was invisible to every existing `dotnet test` run.
+    and parseExpr () = parseAssign ()
 
     parseBlockUntil []

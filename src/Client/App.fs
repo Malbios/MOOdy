@@ -112,6 +112,10 @@ let private tabGameBtn = document.getElementById ("tab-game")
 let private verbTabsEl = document.getElementById ("verb-tabs")
 let private editorPaneEl = document.getElementById ("editor-pane")
 let private editorMonacoEl = document.getElementById ("editor-monaco")
+let private editorBlocklyEl = document.getElementById ("editor-blockly")
+let private editorBlocklyToggleBtn = document.getElementById ("editor-blockly-toggle-btn")
+let private editorBlocklyApplyBtn = document.getElementById ("editor-blockly-apply-btn")
+let private editorBlocklyCancelBtn = document.getElementById ("editor-blockly-cancel-btn")
 let private editorDiagnosticsEl = document.getElementById ("editor-diagnostics")
 let private statusDirtyEl = document.getElementById ("status-dirty")
 let private statusPositionEl = document.getElementById ("status-position")
@@ -470,7 +474,128 @@ connectWebSocket ()
 
 Monaco.registerMoocodeLanguage ()
 Monaco.registerSnippetProvider ()
+BlocklyEditor.register ()
 let private editor = Monaco.create editorMonacoEl
+
+/// The Blockly visual-editor toggle for the verb editor tab (the "Google
+/// Blocks mode for visual coding" card) - a sub-mode within `#editor-pane`,
+/// same relationship `showingVerbHistory`/`showingParentDiff` have to it,
+/// not a separate top-level pane. One workspace instance is created lazily
+/// on first use and reused across tabs, mirroring `editor` itself (a single
+/// shared Monaco instance swapped via `setValue`, not one per tab).
+///
+/// Action-gated, not live-synced, mirroring the inspector's own "Edit as
+/// list/map" toggle: switching to blocks loads a snapshot of the current
+/// Monaco text; "Apply" converts the current block tree back to text and
+/// writes it into Monaco (still not saved to the MOO - that's the existing,
+/// separate save action); "Cancel" discards whatever's in the workspace and
+/// reverts to whatever Monaco already had.
+module private BlocklyToggle =
+    let mutable private workspace: obj option = None
+
+    /// Fetches the live builtins list and feeds `BlocklyEditor.
+    /// setKnownBuiltins` (backing `moo_call`'s NAME-field validator) -
+    /// starts as a no-op since `moocodeDocsCache`/`LspClient` aren't
+    /// defined yet at this point in the file; reassigned to the real
+    /// implementation once they are (`ensureBlocklyBuiltinsLoadedAsync`,
+    /// further down), via `setBuiltinsLoader` below. Always reassigned
+    /// before the app finishes its own top-level startup sequence - long
+    /// before any click could reach this - so the no-op default is really
+    /// just keeping this binding total, not a real runtime fallback path.
+    let mutable private ensureBuiltinsLoaded: unit -> Async<unit> = fun () -> async { return () }
+    let setBuiltinsLoader (f: unit -> Async<unit>) : unit = ensureBuiltinsLoaded <- f
+
+    let private getWorkspace () : obj =
+        match workspace with
+        | Some ws -> ws
+        | None ->
+            let ws = BlocklyEditor.inject editorBlocklyEl
+            workspace <- Some ws
+            ws
+
+    /// `Error` with a human-readable reason for a verb that can't switch to
+    /// blocks - after this construct now maps to a real block, the only way
+    /// this can happen at all is a genuine parse error (an `ErrorStmt`
+    /// anywhere already makes `isFullyMappable` false). Gates on
+    /// `BlocklyJson.isFullyMappable`, not `Blocks.isFullyRepresentable` -
+    /// the two now agree on every construct (see `BlocklyJson.fs`'s own doc
+    /// comment); confirmed live, before that was true, that skipping this
+    /// check let an out-of-subset verb reach `loadStateText` and throw
+    /// `Invalid block definition for type: moo_unsupported`, a real crash,
+    /// not a graceful refusal - the check itself stays, since a parse
+    /// failure still needs the same graceful handling.
+    let private textToBlocklyState (text: string) : Result<string, string> =
+        match Lexer.tokenize text with
+        | { Error = Some err } -> Error(sprintf "Can't switch to blocks - this verb doesn't lex cleanly (%A)." err)
+        | { Tokens = tokens; Error = None } ->
+            let blocks = Parser.parse tokens |> Blocks.astToBlocks
+
+            if not (BlocklyJson.isFullyMappable blocks) then
+                Error "Can't switch to blocks - this verb doesn't parse cleanly right now."
+            else
+                // `None` here just means an empty verb body (`stmtsToJson
+                // []`, `BlocklyEditor.loadStateText`'s own "" case) - not a
+                // conversion failure.
+                match blocks |> BlocklyJson.stmtsToJson with
+                | Some json -> Ok(BlocklyJson.toJsonText json)
+                | None -> Ok ""
+
+    let private blocklyStateToText (stateText: string) : Result<string, string> =
+        if stateText = "" then
+            Ok ""
+        else
+            match BlocklyJson.parseJsonText stateText with
+            | None -> Error "Couldn't apply these blocks - internal error reading the current workspace."
+            | Some json ->
+                match BlocklyJson.jsonToStmts json with
+                | None -> Error "Couldn't apply these blocks - internal error converting them back to code."
+                | Some blocks ->
+                    match blocks |> Blocks.blocksToAst |> Printer.print with
+                    | Ok text -> Ok text
+                    | Error msg -> Error(sprintf "Couldn't apply these blocks - %s" msg)
+
+    /// Reverts `#editor-pane` to showing plain Monaco - called both by
+    /// "Cancel"/"Apply" and whenever a `VerbTab` pane is (re)activated (see
+    /// `showPaneFor`), so switching tabs while mid-toggle never leaves a
+    /// stale block view showing for the next tab.
+    let showMonaco () : unit =
+        editorMonacoEl.setAttribute ("style", "display:block")
+        editorBlocklyEl.setAttribute ("style", "display:none")
+        editorBlocklyToggleBtn.setAttribute ("style", "display:inline-block")
+        editorBlocklyApplyBtn.setAttribute ("style", "display:none")
+        editorBlocklyCancelBtn.setAttribute ("style", "display:none")
+
+    let private showBlocks () : unit =
+        editorMonacoEl.setAttribute ("style", "display:none")
+        editorBlocklyEl.setAttribute ("style", "display:block")
+        editorBlocklyToggleBtn.setAttribute ("style", "display:none")
+        editorBlocklyApplyBtn.setAttribute ("style", "display:inline-block")
+        editorBlocklyCancelBtn.setAttribute ("style", "display:inline-block")
+
+    editorBlocklyToggleBtn.onclick <-
+        fun _ ->
+            ensureBuiltinsLoaded () |> Async.StartImmediate
+
+            match textToBlocklyState (editor.getValue ()) with
+            | Error msg -> window.alert msg
+            | Ok stateText ->
+                let ws = getWorkspace ()
+                BlocklyEditor.loadStateText ws stateText
+                showBlocks ()
+                BlocklyEditor.resize ws
+
+    editorBlocklyApplyBtn.onclick <-
+        fun _ ->
+            match workspace with
+            | None -> ()
+            | Some ws ->
+                match blocklyStateToText (BlocklyEditor.getStateText ws) with
+                | Error msg -> window.alert msg
+                | Ok text ->
+                    editor.setValue text
+                    showMonaco ()
+
+    editorBlocklyCancelBtn.onclick <- fun _ -> showMonaco ()
 
 /// Word wrap / font size / minimap: real, live-applied Monaco preferences
 /// persisted to localStorage - shown/edited via the gear-icon overlay, and
@@ -801,6 +926,36 @@ let private errorCodeGlossary: (string * string * string * string)[] =
        "Exec error - the `exec()` builtin's external command failed to start or exited abnormally.",
        "error"
        "E_INTRPT", "E_INTRPT", "Interrupted - the running task was explicitly killed (`kill_task()`) or interrupted before it finished.", "error" |]
+
+/// Ensures `moocodeDocsCache` is populated (mirroring - not calling into,
+/// since it's inlined inside a much larger match arm - `switchToSidebarView`'s
+/// own `DocsView` fetch-and-merge logic; whichever of the two triggers this
+/// first "wins," the other then finds `Some` already cached and skips a
+/// redundant fetch, matching the cache's own "fetched at most once per
+/// session" doc comment) and feeds the live builtin names into
+/// `BlocklyEditor.setKnownBuiltins` - wired up as `BlocklyToggle`'s own
+/// `ensureBuiltinsLoaded` further down (that module is defined earlier in
+/// this file than `moocodeDocsCache`/`LspClient`, so it can't call this
+/// directly - see its own comment).
+let private ensureBlocklyBuiltinsLoadedAsync () : Async<unit> =
+    async {
+        let! docs =
+            match moocodeDocsCache with
+            | Some cached -> async { return cached }
+            | None ->
+                async {
+                    let! results = LspClient.getMoocodeDocsAsync ()
+                    let merged = Array.append results errorCodeGlossary
+                    moocodeDocsCache <- Some merged
+                    return merged
+                }
+
+        docs
+        |> Array.choose (fun (name, _, _, kind) -> if kind = "builtin" then Some name else None)
+        |> BlocklyEditor.setKnownBuiltins
+    }
+
+BlocklyToggle.setBuiltinsLoader ensureBlocklyBuiltinsLoadedAsync
 
 /// Which property, if any, is the specific sub-focus within the currently
 /// shown inspector - set alongside `selectedObjRef` whenever a caller asks
@@ -1683,6 +1838,9 @@ let private showPaneFor (tab: OpenTab) : unit =
     | VerbTab _ when showingParentDiff -> activateOnly verbParentDiffPaneEl
     | VerbTab _ ->
         activateOnly editorPaneEl
+        // Never leave a previous tab's mid-toggle Blockly view showing for
+        // this one - every plain-editor activation starts back on Monaco.
+        BlocklyToggle.showMonaco ()
         // The container was `display:none` a moment ago - force Monaco to
         // re-measure rather than rely on ResizeObserver picking this up.
         editor.layout ()
