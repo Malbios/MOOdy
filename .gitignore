@@ -3,6 +3,7 @@ obj/
 node_modules/
 src/Client/output/
 src/Client/dist/
+src/Client/dist-ide-stack-*/
 .vs/
 *.user
 TestScratchTree/
