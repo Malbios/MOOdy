@@ -166,12 +166,15 @@ let private blockDefinitions: obj =
         {"type": "moo_while", "message0": "while [%1] %2", "args0": [
             {"type": "field_input", "name": "LABEL", "text": ""}, {"type": "input_value", "name": "COND"}
         ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "tooltip": "The bracketed name is just a label for break/continue to target by name - plain text, not a real MOO variable (unlike fork's task name, below).",
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_return", "message0": "return %1", "args0": [{"type": "input_value", "name": "VALUE"}],
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_break", "message0": "break [%1]", "args0": [{"type": "field_input", "name": "LABEL", "text": ""}],
+        "tooltip": "Targets a while-loop's bracketed label by name - leave blank to break the innermost loop.",
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_continue", "message0": "continue [%1]", "args0": [{"type": "field_input", "name": "LABEL", "text": ""}],
+        "tooltip": "Targets a while-loop's bracketed label by name - leave blank to continue the innermost loop.",
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_expr", "message0": "%1 ;", "args0": [{"type": "input_value", "name": "VALUE"}],
         "previousStatement": null, "nextStatement": null, "style": "variable_blocks"},
@@ -188,9 +191,10 @@ let private blockDefinitions: obj =
             {"type": "input_value", "name": "LO"}, {"type": "input_value", "name": "HI"}
         ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
-        {"type": "moo_fork", "message0": "fork [%1] after %2", "args0": [
+        {"type": "moo_fork", "message0": "fork task %1 after %2", "args0": [
             {"type": "field_input", "name": "NAME", "text": ""}, {"type": "input_value", "name": "DELAY"}
         ], "message1": "do %1", "args1": [{"type": "input_statement", "name": "BODY"}],
+        "tooltip": "Unlike while's bracketed label, this name (if given) is a real MOO variable bound to the forked task's id - readable elsewhere in this verb, e.g. kill_task(name). Leave blank for an anonymous fork.",
         "previousStatement": null, "nextStatement": null, "style": "loop_blocks"},
         {"type": "moo_try_finally", "message0": "try %1", "args0": [{"type": "input_statement", "name": "BODY"}],
         "message1": "finally %1", "args1": [{"type": "input_statement", "name": "HANDLER"}],
