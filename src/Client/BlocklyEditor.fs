@@ -146,41 +146,69 @@ let private booleanContextWarningExtensionFn: obj =
 let private knownBuiltinsHolder: obj = emitJsExpr () "({ names: [] })"
 
 /// Sets the live builtins-name list every `moo_call` block's own NAME
-/// field validates against - called from `App.fs` once the same live
-/// builtins cache the MOOcode docs panel already uses
-/// (`LspClient.getMoocodeDocsAsync`) has loaded. `BlocklyEditor.fs` has no
-/// dependency on `LspClient`/the LSP connection itself - `App.fs`'s
-/// `BlocklyToggle` module (which already owns both) is the one that fetches
-/// and calls this, keeping this module's own dependency surface unchanged.
-let setKnownBuiltins (names: string[]) : unit = knownBuiltinsHolder?names <- names
+/// warning check reads - called from `App.fs` once the same live builtins
+/// cache the MOOcode docs panel already uses (`LspClient.
+/// getMoocodeDocsAsync`) has loaded. `BlocklyEditor.fs` has no dependency
+/// on `LspClient`/the LSP connection itself - `App.fs`'s `BlocklyToggle`
+/// module (which already owns both) is the one that fetches and calls
+/// this, keeping this module's own dependency surface unchanged.
+///
+/// Also re-checks every `moo_call` block already sitting in every live
+/// workspace (`Workspace.getAll()`/`getBlocksByType` - real, confirmed
+/// APIs), not just the holder itself - confirmed live this session that
+/// this is necessary, not defensive-only: the async fetch this feeds
+/// resolves well after a workspace loaded from existing text has already
+/// created its blocks (each already fired its own one-time `onchange` with
+/// an empty list, correctly finding nothing unknown yet), and `onchange`
+/// never fires again on its own just because the list changed later -
+/// without this, any verb converted to blocks before the first fetch
+/// finished would silently never get checked at all.
+let setKnownBuiltins (names: string[]) : unit =
+    knownBuiltinsHolder?names <- names
+    let workspaces: obj[] = blockly?Workspace?getAll ()
+
+    for ws in workspaces do
+        let callBlocks: obj[] = ws?getBlocksByType ("moo_call", false)
+
+        for b in callBlocks do
+            let name: string = b?getFieldValue ("NAME")
+            let isUnknown = names.Length > 0 && not (names |> Array.contains name)
+
+            if isUnknown then
+                b?setWarningText (sprintf "\"%s\" is not a known MOO builtin function." name)
+            else
+                b?setWarningText (null: string)
 
 /// `moo_call`'s NAME field is the one place raw-text `IDENT(args)` calls
 /// live in this language - always a builtin, never a user verb (those go
 /// through `moo_verbcall`'s `receiver:name(args)` instead) - so validating
 /// live against the real builtins list is meaningful, not just a random
-/// guess. Warn-only, never rejects: `Field.setValidator`'s real signature
-/// (`core/field.d.ts`) lets a validator return the new value unchanged to
-/// accept-but-flag, which is what this does via `setWarningText` on the
-/// owning block - a not-yet-real builtin name (a typo, or one this
-/// project's own parser would still happily accept per its own lenient
-/// stance) never blocks editing, just flags it. Same non-mutator-safe
-/// shape as `booleanContextWarningExtensionFn` above (only sets a field
-/// validator + warning text, no mutation-related properties).
+/// guess. Warn-only, never rejects - a not-yet-real builtin name (a typo,
+/// or one this project's own parser would still happily accept per its own
+/// lenient stance) never blocks editing, just flags it.
+///
+/// Deliberately `onchange`-driven (matching `booleanContextWarningExtensionFn`
+/// exactly), NOT `Field.setValidator` - confirmed live this session that a
+/// validator only fires on a *live user edit* of the field, never during
+/// deserialization (`Blockly.serialization.workspaces.load`, what every
+/// verb converted straight from existing text goes through) - so a verb
+/// round-tripped in already containing an unknown builtin name silently
+/// showed no warning at all until the field was manually re-edited, the
+/// exact opposite of what this feature is for. `onchange` fires on block
+/// creation (including from deserialization) as well as later edits, so it
+/// catches both. Same non-mutator-safe shape as
+/// `booleanContextWarningExtensionFn` above (only sets `onchange` +
+/// warning text, no mutation-related properties).
 let private callNameValidatorExtensionFn: obj =
     emitJsExpr
         knownBuiltinsHolder
         """(function() {
         var holder = $0;
-        var block = this;
-        var field = this.getField('NAME');
-        field.setValidator(function(newValue) {
+        this.setOnChange(function() {
             var known = holder.names;
-            if (known.length > 0 && known.indexOf(newValue) === -1) {
-                block.setWarningText('"' + newValue + '" is not a known MOO builtin function.');
-            } else {
-                block.setWarningText(null);
-            }
-            return newValue;
+            var name = this.getFieldValue('NAME');
+            var isUnknown = known.length > 0 && known.indexOf(name) === -1;
+            this.setWarningText(isUnknown ? ('"' + name + '" is not a known MOO builtin function.') : null);
         });
     })"""
 
