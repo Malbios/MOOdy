@@ -179,7 +179,9 @@ type TreeProperty = { Name: string; Perms: string }
 /// hit and fixed for the inspector's parent/child refs - confirmed live
 /// there as a real "duplicate tab instead of switching to the open one"
 /// symptom, not a hypothetical).
-let getObjectTreeAsync () : Async<(int64 * string * int64[] * int64[] * TreeVerb[] * TreeProperty[])[]> =
+let getObjectTreeAsync
+    ()
+    : Async<(int64 * string * int64[] * int64[] * TreeVerb[] * TreeProperty[] * bool option)[]> =
     async {
         let! result = requestAsync "moodev/getObjectTree" (createObj [])
 
@@ -205,7 +207,11 @@ let getObjectTreeAsync () : Async<(int64 * string * int64[] * int64[] * TreeVerb
                     (if isNullOrUndefined o?properties then
                          [||]
                      else
-                         (o?properties: obj[]) |> Array.map (fun p -> { Name = p?name; Perms = p?perms }: TreeProperty)))
+                         (o?properties: obj[]) |> Array.map (fun p -> { Name = p?name; Perms = p?perms }: TreeProperty)),
+                    // Same graceful-degradation convention as `properties` above -
+                    // an old, not-yet-rebuilt LSP server's response simply won't
+                    // have `fertile` at all yet.
+                    (if isNullOrUndefined o?fertile then None else Some(unbox o?fertile: bool)))
     }
 
 /// Custom method (`moodev/findDeadVerbs`, no params) - manually triggered

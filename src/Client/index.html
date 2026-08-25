@@ -34,6 +34,10 @@
         <input type="checkbox" id="setting-sugar-mode" />
         Sugared MOOcode syntax (no semicolons, indentation-based blocks) - experimental
       </label>
+      <label class="settings-row">
+        <input type="checkbox" id="setting-command-echo" />
+        Echo sent commands in the terminal (dark brown)
+      </label>
       <div class="settings-row">
         <button id="setting-forget-login">Forget saved login</button>
         <span id="setting-forget-login-status"></span>
@@ -114,6 +118,19 @@
             <label class="settings-row">
               <input type="checkbox" id="tree-filter-hide-empty-leaves" />
               Hide empty leaf objects
+            </label>
+            <div class="settings-row tree-color-rules-header">Fertile filter</div>
+            <label class="settings-row">
+              <input type="radio" name="tree-filter-fertile" id="tree-filter-fertile-both" value="both" />
+              Both
+            </label>
+            <label class="settings-row">
+              <input type="radio" name="tree-filter-fertile" id="tree-filter-fertile-only" value="only" />
+              Only fertile
+            </label>
+            <label class="settings-row">
+              <input type="radio" name="tree-filter-fertile" id="tree-filter-fertile-not" value="not" />
+              Only not fertile
             </label>
             <div class="settings-row tree-color-rules-header">Tree colors</div>
             <div id="tree-color-rules-list" class="tree-color-rules-list"></div>

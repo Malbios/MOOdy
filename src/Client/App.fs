@@ -65,6 +65,7 @@ let private settingWordWrapEl = document.getElementById ("setting-wordwrap") :?>
 let private settingFontSizeEl = document.getElementById ("setting-fontsize") :?> HTMLInputElement
 let private settingMinimapEl = document.getElementById ("setting-minimap") :?> HTMLInputElement
 let private settingSugarModeEl = document.getElementById ("setting-sugar-mode") :?> HTMLInputElement
+let private settingCommandEchoEl = document.getElementById ("setting-command-echo") :?> HTMLInputElement
 let private settingForgetLoginBtn = document.getElementById ("setting-forget-login")
 let private settingForgetLoginStatusEl = document.getElementById ("setting-forget-login-status")
 let private settingMooHostEl = document.getElementById ("setting-moo-host") :?> HTMLInputElement
@@ -98,6 +99,15 @@ let private treeNewObjectBtn = document.getElementById ("tree-new-object-btn")
 
 let private treeFilterHideEmptyLeavesEl =
     document.getElementById ("tree-filter-hide-empty-leaves") :?> HTMLInputElement
+
+let private treeFilterFertileBothEl =
+    document.getElementById ("tree-filter-fertile-both") :?> HTMLInputElement
+
+let private treeFilterFertileOnlyEl =
+    document.getElementById ("tree-filter-fertile-only") :?> HTMLInputElement
+
+let private treeFilterFertileNotEl =
+    document.getElementById ("tree-filter-fertile-not") :?> HTMLInputElement
 
 let private treeColorRulesListEl = document.getElementById ("tree-color-rules-list")
 
@@ -597,6 +607,15 @@ module private BlocklyToggle =
 
     editorBlocklyCancelBtn.onclick <- fun _ -> showMonaco ()
 
+/// The object tree's fertile-state filter (`Settings.fertileFilter`, the
+/// "Tree display options" popover) - three states, not a bool, since
+/// "both" (no filtering) is a real, distinct choice from either single-state
+/// filter, not just an absence of one.
+type private FertileFilter =
+    | FertileBoth
+    | FertileOnly
+    | FertileNotOnly
+
 /// Word wrap / font size / minimap: real, live-applied Monaco preferences
 /// persisted to localStorage - shown/edited via the gear-icon overlay, and
 /// applied immediately on change (no explicit "Save" button, same "live"
@@ -625,6 +644,27 @@ module private Settings =
     let setHideEmptyLeaves (enabled: bool) : unit =
         window.localStorage.setItem (hideEmptyLeavesKey, (if enabled then "on" else "off"))
 
+    let private fertileFilterKey = "moodev-tree-fertile-filter" // "both" | "only" | "not"
+
+    /// A standing display preference (like `hideEmptyLeaves`), not an
+    /// ephemeral search string like `treeFilterText` (which is deliberately
+    /// never persisted) - persisted the same way. Read directly (not
+    /// cached), same reasoning as `hideEmptyLeavesEnabled`.
+    let fertileFilter () : FertileFilter =
+        match loadString fertileFilterKey "both" with
+        | "only" -> FertileOnly
+        | "not" -> FertileNotOnly
+        | _ -> FertileBoth
+
+    let setFertileFilter (filter: FertileFilter) : unit =
+        let v =
+            match filter with
+            | FertileBoth -> "both"
+            | FertileOnly -> "only"
+            | FertileNotOnly -> "not"
+
+        window.localStorage.setItem (fertileFilterKey, v)
+
     let private sugarModeKey = "moodev-sugar-mode" // "on" | "off"
 
     /// Default OFF - an experimental, editor-only dialect (no trailing
@@ -638,6 +678,18 @@ module private Settings =
 
     let setSugarMode (enabled: bool) : unit =
         window.localStorage.setItem (sugarModeKey, (if enabled then "on" else "off"))
+
+    let private commandEchoKey = "moodev-command-echo" // "on" | "off"
+
+    /// Default OFF - a permanent change to terminal output should be
+    /// opt-in, not sprung on existing users the next time they type a
+    /// command. Read directly (not cached), same "check at the moment it
+    /// matters" convention as `sugarModeEnabled` - already-rendered output
+    /// never gets recolored if this is toggled mid-session.
+    let commandEchoEnabled () : bool = loadString commandEchoKey "off" = "on"
+
+    let setCommandEcho (enabled: bool) : unit =
+        window.localStorage.setItem (commandEchoKey, (if enabled then "on" else "off"))
 
     let private colorRulesKey = "moodev-tree-color-rules"
 
@@ -707,18 +759,27 @@ module private Settings =
         settingFontSizeEl.value <- string fontSize
         settingMinimapEl.``checked`` <- minimap
         treeFilterHideEmptyLeavesEl.``checked`` <- hideEmptyLeavesEnabled ()
+
+        (match fertileFilter () with
+         | FertileBoth -> treeFilterFertileBothEl.``checked`` <- true
+         | FertileOnly -> treeFilterFertileOnlyEl.``checked`` <- true
+         | FertileNotOnly -> treeFilterFertileNotEl.``checked`` <- true)
+
         settingSugarModeEl.``checked`` <- sugarModeEnabled ()
+        settingCommandEchoEl.``checked`` <- commandEchoEnabled ()
 
         settingWordWrapEl.onchange <- fun _ -> applyAndSaveFromControls ()
         settingFontSizeEl.onchange <- fun _ -> applyAndSaveFromControls ()
         settingMinimapEl.onchange <- fun _ -> applyAndSaveFromControls ()
-        // The hide-empty-leaves checkbox's onchange redraws the tree, not
-        // just Monaco (unlike the three above) - wired separately, later in
-        // this file, once `renderTree` exists (this module is defined
-        // before it).
-        // No redraw needed for sugar mode - it only affects verbs
-        // fetched/saved from this point on, not anything already open.
+        // The hide-empty-leaves/fertile-filter controls' onchange redraws
+        // the tree, not just Monaco (unlike the three above) - wired
+        // separately, later in this file, once `renderTree` exists (this
+        // module is defined before it).
+        // No redraw needed for sugar mode/command echo - they only affect
+        // verbs fetched/saved, or commands sent, from this point on, not
+        // anything already open/rendered.
         settingSugarModeEl.onchange <- fun _ -> setSugarMode settingSugarModeEl.``checked``
+        settingCommandEchoEl.onchange <- fun _ -> setCommandEcho settingCommandEchoEl.``checked``
 
         settingForgetLoginBtn.onclick <-
             fun _ ->
@@ -2157,7 +2218,15 @@ type private TreeNode =
       /// palette's jump-to-verb search (Part 6). The login payload already
       /// carries full `TreeVerb[]` per object; this is the only field this
       /// type previously discarded everything from except `HasOwnContent`.
-      Verbs: string[] }
+      Verbs: string[]
+      /// `None` if unknown (a live-added object from `mergeLiveChildren`/
+      /// `mergeLiveRoots`, which don't fetch `.f`, or a pre-flags export).
+      /// Set once at build/merge time and never live-refreshed afterward -
+      /// same contract `HasOwnContent`/`Verbs` already have (confirmed:
+      /// `syncTreeNodeFromLiveInfo` only ever refreshes `Name`/`Parents`) -
+      /// so flipping an object's fertile flag via the inspector won't
+      /// retroactively update this until the next full tree load.
+      Fertile: bool option }
 
 let mutable private treeNodes: Map<int64, TreeNode> = Map.empty
 
@@ -2216,7 +2285,8 @@ let private colorForObject (objRef: int64) : string option =
 let mutable private rootRefs: int64[] = [||]
 
 let private buildTree
-    (nodes: (int64 * string * int64[] * int64[] * LspClient.TreeVerb[] * LspClient.TreeProperty[])[])
+    (nodes:
+        (int64 * string * int64[] * int64[] * LspClient.TreeVerb[] * LspClient.TreeProperty[] * bool option)[])
     : unit =
     // Verbs/properties are still part of the wire shape (the tree's own
     // login-time fetch is shared with other consumers), but the tree itself
@@ -2224,20 +2294,21 @@ let private buildTree
     // there are any at all survives, for the "hide empty leaves" check.
     treeNodes <-
         nodes
-        |> Array.map (fun (objRef, name, parents, children, verbs, properties) ->
+        |> Array.map (fun (objRef, name, parents, children, verbs, properties, fertile) ->
             objRef,
             { ObjRef = objRef
               Name = name
               Parents = parents
               Children = children
               HasOwnContent = not (Array.isEmpty verbs) || not (Array.isEmpty properties)
-              Verbs = verbs |> Array.map (fun v -> v.Name) })
+              Verbs = verbs |> Array.map (fun v -> v.Name)
+              Fertile = fertile })
         |> Map.ofArray
 
     rootRefs <-
         nodes
-        |> Array.filter (fun (_, _, parents, _, _, _) -> Array.isEmpty parents)
-        |> Array.map (fun (objRef, _, _, _, _, _) -> objRef)
+        |> Array.filter (fun (_, _, parents, _, _, _, _) -> Array.isEmpty parents)
+        |> Array.map (fun (objRef, _, _, _, _, _, _) -> objRef)
 
 /// Folds a `get-live-children` response into `treeNodes` - the mechanism
 /// that lets a live (uncorponym'd, per moo-vcs-plan.md I3) object appear in
@@ -2266,7 +2337,11 @@ let private mergeLiveChildren
                       Parents = parents
                       Children = [||]
                       HasOwnContent = not (Array.isEmpty verbs) || not (Array.isEmpty properties)
-                      Verbs = verbs |> Array.map (fun v -> v.Name) }
+                      Verbs = verbs |> Array.map (fun v -> v.Name)
+                      // `get-live-children` doesn't fetch `.f` - unknown
+                      // until the next full tree load, see `TreeNode.
+                      // Fertile`'s own comment.
+                      Fertile = None }
                     treeNodes
 
     match Map.tryFind parentRef treeNodes with
@@ -2294,7 +2369,10 @@ let private mergeLiveRoots (roots: (int64 * string * int64[] * LspClient.TreeVer
                       Parents = parents
                       Children = [||]
                       HasOwnContent = not (Array.isEmpty verbs) || not (Array.isEmpty properties)
-                      Verbs = verbs |> Array.map (fun v -> v.Name) }
+                      Verbs = verbs |> Array.map (fun v -> v.Name)
+                      // `get-live-roots` doesn't fetch `.f` either - same
+                      // reasoning as `mergeLiveChildren` above.
+                      Fertile = None }
                     treeNodes
 
     rootRefs <- Array.append rootRefs (roots |> Array.map (fun (r, _, _, _, _) -> r)) |> Array.distinct
@@ -6341,20 +6419,33 @@ and private renderTabs () : unit =
     else
         tabGameBtn.classList.remove "active"
 
-/// Whether `node` itself is a filter match - object name only, plain
-/// substring match (see `matchesFilter`).
-and private nodeMatches (filterText: string) (node: TreeNode) : bool = matchesFilter filterText node.Name
+/// Whether `node` satisfies the current fertile-state filter. A node with
+/// unknown fertile state (`None` - a live-added object never flag-checked,
+/// or a pre-flags export) only ever matches `FertileBoth` - it's excluded
+/// from both "only fertile" and "only not fertile", same "don't claim
+/// certainty you don't have" reasoning `isEmptyLeaf`'s `None -> false`
+/// branch uses for an unknown ref.
+and private nodeMatchesFertile (filter: FertileFilter) (node: TreeNode) : bool =
+    match filter with
+    | FertileBoth -> true
+    | FertileOnly -> node.Fertile = Some true
+    | FertileNotOnly -> node.Fertile = Some false
+
+/// Whether `node` itself is a filter match - object name (plain substring
+/// match, see `matchesFilter`) AND the current fertile-state filter.
+and private nodeMatches (filterText: string) (fertileFilter: FertileFilter) (node: TreeNode) : bool =
+    matchesFilter filterText node.Name && nodeMatchesFertile fertileFilter node
 
 /// Every objRef that needs to be expanded for at least one filter match to
 /// be reachable - a match's *every* parent, recursively (via `ancestorsOf`),
 /// since a DAG node can have more than one parent path to a root and each
 /// occurrence needs its own ancestor chain expanded for the match to be
 /// visible wherever it appears.
-and private ancestorExpansionSet (filterText: string) : Set<int64> =
+and private ancestorExpansionSet (filterText: string) (fertileFilter: FertileFilter) : Set<int64> =
     treeNodes
     |> Map.toSeq
     |> Seq.map snd
-    |> Seq.filter (nodeMatches filterText)
+    |> Seq.filter (nodeMatches filterText fertileFilter)
     |> Seq.map (fun n -> n.ObjRef)
     |> Seq.fold (fun acc r -> Set.union acc (Set.add r (ancestorsOf Set.empty r))) Set.empty
 
@@ -6641,19 +6732,20 @@ and private requestUncheckedLeaves (rows: TreeRow list) : unit =
             sendAction [ "action" ==> "get-live-children"; "obj" ==> int objRef ]
 
 /// Recomputes and redraws the visible tree from `treeNodes`/`expandedRefs`/
-/// `treeFilterText` - the single entry point every state change (expand
-/// toggle, filter keystroke, tab switch, hide-empty-leaves setting) calls
-/// to stay in sync, matching this file's existing "full rebuild, no
-/// incremental DOM patching" style.
+/// `treeFilterText`/the fertile filter - the single entry point every state
+/// change (expand toggle, filter keystroke, fertile-filter change, tab
+/// switch, hide-empty-leaves setting) calls to stay in sync, matching this
+/// file's existing "full rebuild, no incremental DOM patching" style.
 and private renderTree () : unit =
     let hideEmptyLeaves = Settings.hideEmptyLeavesEnabled ()
+    let fertileFilter = Settings.fertileFilter ()
 
-    if treeFilterText.Trim() = "" then
+    if treeFilterText.Trim() = "" && fertileFilter = FertileBoth then
         let rows = flattenVisibleRows hideEmptyLeaves expandedRefs rootRefs
         requestUncheckedLeaves rows
         renderTreeRows rows
     else
-        let ancestorRefs = ancestorExpansionSet treeFilterText
+        let ancestorRefs = ancestorExpansionSet treeFilterText fertileFilter
         let expanded = Set.union expandedRefs ancestorRefs
         let allRows = flattenVisibleRows hideEmptyLeaves expanded rootRefs
 
@@ -6663,7 +6755,9 @@ and private renderTree () : unit =
             allRows
             |> List.filter (fun (objRef, _, _) ->
                 Set.contains objRef ancestorRefs
-                || (Map.tryFind objRef treeNodes |> Option.map (nodeMatches treeFilterText) |> Option.defaultValue false))
+                || (Map.tryFind objRef treeNodes
+                    |> Option.map (nodeMatches treeFilterText fertileFilter)
+                    |> Option.defaultValue false))
 
         requestUncheckedLeaves visibleRows
         renderTreeRows visibleRows
@@ -7085,6 +7179,15 @@ treeFilterHideEmptyLeavesEl.onchange <-
         Settings.setHideEmptyLeaves treeFilterHideEmptyLeavesEl.``checked``
         renderTree ()
 
+for el, filter in
+    [ treeFilterFertileBothEl, FertileBoth
+      treeFilterFertileOnlyEl, FertileOnly
+      treeFilterFertileNotEl, FertileNotOnly ] do
+    el.onchange <-
+        fun _ ->
+            Settings.setFertileFilter filter
+            renderTree ()
+
 // Starts out showing its empty-state placeholder - populated for real once
 // `moodev-login-result` confirms a login (see below).
 renderTree ()
@@ -7230,6 +7333,25 @@ let private commandHistory = ResizeArray<string>()
 let mutable private historyIndex = -1
 let mutable private historyDraft = ""
 
+/// Hardcoded, not user-configurable beyond on/off - consistent with the
+/// rest of this codebase's single fixed dark palette (`style.css` has no
+/// theme variables to key off of).
+let private commandEchoColor = "#8b5a2b"
+
+/// Echoes a just-sent in-game command into `#output` in a fixed dark-brown
+/// color, so a burst of server output is traceable back to which typed
+/// command caused it - bypasses `Ansi.feed`/`renderInto` entirely (nothing
+/// to parse; a typed command has no embedded SGR escapes, and running it
+/// through `Ansi.feed` would needlessly perturb `ansiState`, which is only
+/// meant to track *server* output's carried-across-calls ANSI state).
+let private appendCommandEcho (cmd: string) : unit =
+    if Settings.commandEchoEnabled () then
+        let span = document.createElement "span"
+        span.appendChild (document.createTextNode (cmd + "\n")) |> ignore
+        span.setAttribute ("style", sprintf "color: %s" commandEchoColor)
+        outputEl.appendChild span |> ignore
+        outputEl.scrollTop <- outputEl.scrollHeight
+
 inputEl.onkeydown <-
     fun ev ->
         match ev.key with
@@ -7242,6 +7364,7 @@ inputEl.onkeydown <-
             if ws.readyState <> WebSocketState.OPEN then
                 appendOutput "\n[not connected - message not sent]\n"
             else
+                appendCommandEcho cmd
                 ws.send cmd
 
             inputEl.value <- ""
