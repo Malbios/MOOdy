@@ -59,6 +59,19 @@
     so this is the only way to set that up for a bare Minimal.db-derived world. Must differ from
     -Port. Skipped (and left alone) if something's already listening on this port, so it's safe to
     re-run too.
+
+.PARAMETER SkipValidate
+    Passes the `moo` binary's own `--skip-validate` flag: skips the object-hierarchy validation
+    pass on load. Only safe against a db already known-good (e.g. one that just finished a clean,
+    fully-validated boot) - against a genuinely broken/cyclic object graph this trades a fast,
+    clear failure at startup for a hang or crash the first time something actually walks the graph.
+
+.PARAMETER ForceBinaryNotify
+    Passes the `moo` binary's own `--force-binary-notify` flag: always decodes `~XX` binary-string
+    escapes in notify() output for every connection, regardless of each connection's own "binary"
+    option - reproduces the always-on behavior some other cores hard-code at the engine level,
+    without changing the standard per-connection opt-in default for any other db built from this
+    same binary.
 #>
 
 param(
@@ -68,7 +81,9 @@ param(
     [string]$TreeDir = '',
     [switch]$Emergency,
     [switch]$Bootstrap,
-    [int]$LspBridgePort = 0
+    [int]$LspBridgePort = 0,
+    [switch]$SkipValidate,
+    [switch]$ForceBinaryNotify
 )
 
 if ($Bootstrap -and -not $Emergency) {
@@ -137,8 +152,10 @@ $wslDbDir = ConvertTo-WslPath $dbDir
 $wslMooBinary = ConvertTo-WslPath $mooBinary
 $treeArg = if ($TreeDir) { "-i $(ConvertTo-WslPath (Resolve-Path $TreeDir).Path)" } else { '' }
 $emergencyArg = if ($Emergency) { '-e' } else { '' }
+$skipValidateArg = if ($SkipValidate) { '--skip-validate' } else { '' }
+$forceBinaryNotifyArg = if ($ForceBinaryNotify) { '--force-binary-notify' } else { '' }
 
-$mooCommand = "cd $wslDbDir && $wslMooBinary $emergencyArg $dbFile $dbFile.new $Port $treeArg"
+$mooCommand = "cd $wslDbDir && $wslMooBinary $emergencyArg $skipValidateArg $forceBinaryNotifyArg $dbFile $dbFile.new $Port $treeArg"
 
 if ($Bootstrap) {
     # Built as an array joined with an explicit "`n" (not a here-string's own
