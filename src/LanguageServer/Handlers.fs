@@ -147,7 +147,11 @@ type ObjectTreeNode =
       Parents: ObjRef[]
       Children: ObjRef[]
       Verbs: ObjectTreeVerb[]
-      Properties: ObjectTreeProperty[] }
+      Properties: ObjectTreeProperty[]
+      /// `None` when the source object's `Flags` weren't populated (a
+      /// `metadata.json` from before that field existed - see `ObjectNode.
+      /// Flags`'s own comment) - not the same as "known not fertile."
+      Fertile: bool option }
 
 /// The browser client never has a real filesystem path - it only ever
 /// knows "object # + verb name" (the same pair `$vcs:ide_fetch`/`ide_save`
@@ -2703,7 +2707,8 @@ type MooLspServer(_client: MooLspClient, getGraph: unit -> Graph, bridge: Sideca
                       Properties =
                         o.Properties
                         |> List.map (fun pr -> { Name = pr.Name; Perms = pr.Perms }: ObjectTreeProperty)
-                        |> Array.ofList }
+                        |> Array.ofList
+                      Fertile = o.Flags |> Option.map (fun f -> f.Fertile) }
                     : ObjectTreeNode)
                 |> Seq.sortBy (fun n -> n.Name)
                 |> Array.ofSeq

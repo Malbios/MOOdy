@@ -854,6 +854,18 @@ let ``GetObjectTree's parent/child edges agree with each other`` () =
     | other -> Assert.Fail(sprintf "expected Ok, got %A" other)
 
 [<Fact>]
+let ``GetObjectTree reports each object's Fertile flag`` () =
+    // room (#3) is fertile ("f" in its Flags); room_child (#10) is not
+    // (empty Flags, still a real, populated `ObjectFlags` - `Some false`,
+    // not `None`, since this fixture's Loader path always populates Flags).
+    match server.Value.GetObjectTree(null) |> Async.RunSynchronously with
+    | Ok nodes ->
+        let byRef = nodes |> Array.map (fun n -> n.ObjRef, n) |> Map.ofArray
+        Assert.Equal(Some true, byRef.[3L].Fertile)
+        Assert.Equal(Some false, byRef.[10L].Fertile)
+    | other -> Assert.Fail(sprintf "expected Ok, got %A" other)
+
+[<Fact>]
 let ``GetObjectTree reports vcs_util's own verbs by primary name`` () =
     match server.Value.GetObjectTree(null) |> Async.RunSynchronously with
     | Ok nodes ->
