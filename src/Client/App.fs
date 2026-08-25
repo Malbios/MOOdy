@@ -65,6 +65,7 @@ let private settingWordWrapEl = document.getElementById ("setting-wordwrap") :?>
 let private settingFontSizeEl = document.getElementById ("setting-fontsize") :?> HTMLInputElement
 let private settingMinimapEl = document.getElementById ("setting-minimap") :?> HTMLInputElement
 let private settingSugarModeEl = document.getElementById ("setting-sugar-mode") :?> HTMLInputElement
+let private settingCommandEchoEl = document.getElementById ("setting-command-echo") :?> HTMLInputElement
 let private settingForgetLoginBtn = document.getElementById ("setting-forget-login")
 let private settingForgetLoginStatusEl = document.getElementById ("setting-forget-login-status")
 let private settingMooHostEl = document.getElementById ("setting-moo-host") :?> HTMLInputElement
@@ -678,6 +679,18 @@ module private Settings =
     let setSugarMode (enabled: bool) : unit =
         window.localStorage.setItem (sugarModeKey, (if enabled then "on" else "off"))
 
+    let private commandEchoKey = "moodev-command-echo" // "on" | "off"
+
+    /// Default OFF - a permanent change to terminal output should be
+    /// opt-in, not sprung on existing users the next time they type a
+    /// command. Read directly (not cached), same "check at the moment it
+    /// matters" convention as `sugarModeEnabled` - already-rendered output
+    /// never gets recolored if this is toggled mid-session.
+    let commandEchoEnabled () : bool = loadString commandEchoKey "off" = "on"
+
+    let setCommandEcho (enabled: bool) : unit =
+        window.localStorage.setItem (commandEchoKey, (if enabled then "on" else "off"))
+
     let private colorRulesKey = "moodev-tree-color-rules"
 
     /// `int64` is a real JS `BigInt` under Fable - `JSON.stringify` throws on
@@ -753,6 +766,7 @@ module private Settings =
          | FertileNotOnly -> treeFilterFertileNotEl.``checked`` <- true)
 
         settingSugarModeEl.``checked`` <- sugarModeEnabled ()
+        settingCommandEchoEl.``checked`` <- commandEchoEnabled ()
 
         settingWordWrapEl.onchange <- fun _ -> applyAndSaveFromControls ()
         settingFontSizeEl.onchange <- fun _ -> applyAndSaveFromControls ()
@@ -761,9 +775,11 @@ module private Settings =
         // the tree, not just Monaco (unlike the three above) - wired
         // separately, later in this file, once `renderTree` exists (this
         // module is defined before it).
-        // No redraw needed for sugar mode - it only affects verbs
-        // fetched/saved from this point on, not anything already open.
+        // No redraw needed for sugar mode/command echo - they only affect
+        // verbs fetched/saved, or commands sent, from this point on, not
+        // anything already open/rendered.
         settingSugarModeEl.onchange <- fun _ -> setSugarMode settingSugarModeEl.``checked``
+        settingCommandEchoEl.onchange <- fun _ -> setCommandEcho settingCommandEchoEl.``checked``
 
         settingForgetLoginBtn.onclick <-
             fun _ ->
@@ -7317,6 +7333,25 @@ let private commandHistory = ResizeArray<string>()
 let mutable private historyIndex = -1
 let mutable private historyDraft = ""
 
+/// Hardcoded, not user-configurable beyond on/off - consistent with the
+/// rest of this codebase's single fixed dark palette (`style.css` has no
+/// theme variables to key off of).
+let private commandEchoColor = "#8b5a2b"
+
+/// Echoes a just-sent in-game command into `#output` in a fixed dark-brown
+/// color, so a burst of server output is traceable back to which typed
+/// command caused it - bypasses `Ansi.feed`/`renderInto` entirely (nothing
+/// to parse; a typed command has no embedded SGR escapes, and running it
+/// through `Ansi.feed` would needlessly perturb `ansiState`, which is only
+/// meant to track *server* output's carried-across-calls ANSI state).
+let private appendCommandEcho (cmd: string) : unit =
+    if Settings.commandEchoEnabled () then
+        let span = document.createElement "span"
+        span.appendChild (document.createTextNode (cmd + "\n")) |> ignore
+        span.setAttribute ("style", sprintf "color: %s" commandEchoColor)
+        outputEl.appendChild span |> ignore
+        outputEl.scrollTop <- outputEl.scrollHeight
+
 inputEl.onkeydown <-
     fun ev ->
         match ev.key with
@@ -7329,6 +7364,7 @@ inputEl.onkeydown <-
             if ws.readyState <> WebSocketState.OPEN then
                 appendOutput "\n[not connected - message not sent]\n"
             else
+                appendCommandEcho cmd
                 ws.send cmd
 
             inputEl.value <- ""
